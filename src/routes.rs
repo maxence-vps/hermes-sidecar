@@ -21,7 +21,7 @@ use crate::{
     auth::require_api_key,
     docs,
     error::{AppError, ErrorBody},
-    media,
+    media, projects,
     state::AppState,
 };
 
@@ -36,7 +36,10 @@ pub const BEARER_SCHEME: &str = "bearer";
             Protected routes take the same bearer key as Hermes (`API_SERVER_KEY`)."
     ),
     modifiers(&BearerAuth),
-    tags((name = "sidecar", description = "Sidecar endpoints"))
+    tags(
+        (name = "sidecar", description = "Sidecar endpoints"),
+        (name = "projects", description = "Projects group Conversations (Hermes sessions) and git Repositories"),
+    )
 )]
 struct ApiDoc;
 
@@ -60,6 +63,7 @@ pub fn router(state: AppState) -> Router {
     let protected = OpenApiRouter::new()
         .routes(routes!(status))
         .routes(routes!(get_media))
+        .merge(projects::router())
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             require_api_key,
