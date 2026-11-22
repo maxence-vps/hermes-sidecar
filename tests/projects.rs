@@ -266,6 +266,8 @@ async fn project_routes_require_the_shared_key() {
         (Method::DELETE, format!("/projects/{id}")),
         (Method::POST, format!("/projects/{id}/repositories")),
         (Method::DELETE, format!("/projects/{id}/repositories/{id}")),
+        (Method::PUT, format!("/projects/{id}/conversations/c1")),
+        (Method::DELETE, format!("/projects/{id}/conversations/c1")),
     ] {
         let request = Request::builder()
             .method(method.clone())
@@ -483,4 +485,170 @@ async fn deleting_a_project_detaches_its_repositories() {
             .len(),
         1
     );
+}
+
+// --- Conversations ---
+
+fn conversation_path(project: &Value, conversation_id: &str) -> String {
+    format!("/projects/{}/conversations/{conversation_id}", id(project))
+}
+
+async fn put_conversation(
+    app: &Router,
+    project: &Value,
+    conversation_id: &str,
+) -> (StatusCode, Value) {
+    call(
+        app,
+        Method::PUT,
+        &conversation_path(project, conversation_id),
+        None,
+    )
+    .await
+}
+
+fn conversation_ids(project: &Value) -> Vec<&str> {
+    let mut ids: Vec<&str> = project["conversation_ids"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|id| id.as_str().unwrap())
+        .collect();
+    // In no guaranteed order.
+    ids.sort_unstable();
+    ids
+}
+
+#[tokio::test]
+async fn attaches_conversations() {
+    let (app, _dir) = app().await;
+    let project = create(&app, "Hermes").await;
+
+    for conversation_id in ["20260412_101500_ab12cd", "20260101_090000_ffffff"] {
+        let (status, body) = put_conversation(&app, &project, conversation_id).await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        assert_eq!(body, Value::Null);
+    }
+    // Idempotent.
+    let (status, _) = put_conversation(&app, &project, "20260412_101500_ab12cd").await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    let project = get(&app, &project).await;
+    assert_eq!(
+        conversation_ids(&project),
+        ["20260101_090000_ffffff", "20260412_101500_ab12cd"]
+    );
+    let (_, list) = call(&app, Method::GET, "/projects", None).await;
+    assert_eq!(conversation_ids(&list[0]), conversation_ids(&project));
+}
+
+#[tokio::test]
+async fn a_conversation_moves_between_projects() {
+    let (app, _dir) = app().await;
+    let hermes = create(&app, "Hermes").await;
+    let infra = create(&app, "Infra").await;
+
+    put_conversation(&app, &hermes, "c1").await;
+    let (status, _) = put_conversation(&app, &infra, "c1").await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert!(conversation_ids(&get(&app, &hermes).await).is_empty());
+    assert_eq!(conversation_ids(&get(&app, &infra).await), ["c1"]);
+
+    // Detaching it through its old project leaves it where it is.
+    let (status, _) = call(
+        &app,
+        Method::DELETE,
+        &conversation_path(&hermes, "c1"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert_eq!(conversation_ids(&get(&app, &infra).await), ["c1"]);
+}
+
+#[tokio::test]
+async fn detaches_a_conversation() {
+    let (app, _dir) = app().await;
+    let project = create(&app, "Hermes").await;
+    put_conversation(&app, &project, "c1").await;
+    put_conversation(&app, &project, "c2").await;
+
+    let path = conversation_path(&project, "c1");
+    let (status, body) = call(&app, Method::DELETE, &path, None).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert_eq!(body, Value::Null);
+    assert_eq!(conversation_ids(&get(&app, &project).await), ["c2"]);
+
+    // Also when it is not in the project.
+    let (status, _) = call(&app, Method::DELETE, &path, None).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (status, _) = call(
+        &app,
+        Method::DELETE,
+        &conversation_path(&project, "never"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+}
+
+#[tokio::test]
+async fn deleting_a_project_leaves_its_conversations_without_a_project() {
+    let (app, _dir) = app().await;
+    let hermes = create(&app, "Hermes").await;
+    put_conversation(&app, &hermes, "c1").await;
+
+    let (status, _) = call(
+        &app,
+        Method::DELETE,
+        &format!("/projects/{}", id(&hermes)),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    // A conversation in no project can join any project, as before.
+    let infra = create(&app, "Infra").await;
+    let (status, _) = put_conversation(&app, &infra, "c1").await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert_eq!(conversation_ids(&get(&app, &infra).await), ["c1"]);
+}
+
+#[tokio::test]
+async fn rejects_an_invalid_conversation_id() {
+    let (app, _dir) = app().await;
+    let project = create(&app, "Hermes").await;
+    let too_long = "x".repeat(256);
+    // Percent-encoded: a slash, a space, a non-ASCII character.
+    for conversation_id in ["a%2Fb", "a%20b", "%C3%A9", too_long.as_str()] {
+        for method in [Method::PUT, Method::DELETE] {
+            let path = conversation_path(&project, conversation_id);
+            let (status, body) = call(&app, method.clone(), &path, None).await;
+            assert_eq!(
+                status,
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "{method} {conversation_id}"
+            );
+            assert_eq!(body["error"]["code"], "invalid_conversation_id");
+        }
+    }
+    let (status, _) = put_conversation(&app, &project, &"x".repeat(255)).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+}
+
+#[tokio::test]
+async fn conversation_routes_check_the_project() {
+    let (app, _dir) = app().await;
+    let unknown = json!({ "id": uuid::Uuid::new_v4().to_string() });
+    for method in [Method::PUT, Method::DELETE] {
+        let (status, body) = call(
+            &app,
+            method.clone(),
+            &conversation_path(&unknown, "c1"),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{method}");
+        assert_eq!(body["error"]["code"], "project_not_found");
+    }
 }
