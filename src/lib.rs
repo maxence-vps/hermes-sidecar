@@ -8,6 +8,7 @@ pub mod error;
 pub mod hermes;
 pub mod media;
 pub mod projects;
+pub mod repository_url;
 pub mod routes;
 pub mod state;
 

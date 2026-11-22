@@ -264,6 +264,8 @@ async fn project_routes_require_the_shared_key() {
         (Method::GET, format!("/projects/{id}")),
         (Method::PATCH, format!("/projects/{id}")),
         (Method::DELETE, format!("/projects/{id}")),
+        (Method::POST, format!("/projects/{id}/repositories")),
+        (Method::DELETE, format!("/projects/{id}/repositories/{id}")),
     ] {
         let request = Request::builder()
             .method(method.clone())
@@ -297,6 +299,16 @@ async fn openapi_spec_documents_the_project_routes() {
             &["200", "400", "401", "404", "409", "422"],
         ),
         ("/projects/{id}", "delete", &["204", "401", "404"]),
+        (
+            "/projects/{id}/repositories",
+            "post",
+            &["201", "400", "401", "404", "409", "422"],
+        ),
+        (
+            "/projects/{id}/repositories/{repository_id}",
+            "delete",
+            &["204", "401", "404"],
+        ),
     ];
     for (path, method, codes) in expected {
         let op = &spec["paths"][path][method];
@@ -310,4 +322,165 @@ async fn openapi_spec_documents_the_project_routes() {
     for field in ["id", "name", "repositories", "conversation_ids"] {
         assert!(project[field].is_object(), "{field}");
     }
+}
+
+// --- Repositories ---
+
+async fn attach(app: &Router, project: &Value, url: &str) -> (StatusCode, Value) {
+    let path = format!("/projects/{}/repositories", id(project));
+    call(app, Method::POST, &path, Some(json!({ "url": url }))).await
+}
+
+async fn get(app: &Router, project: &Value) -> Value {
+    let (status, body) = call(
+        app,
+        Method::GET,
+        &format!("/projects/{}", id(project)),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    body
+}
+
+#[tokio::test]
+async fn attaches_repositories_sorted_by_name() {
+    let (app, _dir) = app().await;
+    let project = create(&app, "Hermes").await;
+
+    let (status, repository) = attach(&app, &project, "git@GitHub.com:owner/zeta.git").await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(repository["url"], "https://github.com/owner/zeta");
+    assert_eq!(repository["name"], "owner/zeta");
+    uuid::Uuid::parse_str(repository["id"].as_str().unwrap()).unwrap();
+
+    let (status, _) = attach(&app, &project, "https://gitlab.com/Org/team/api").await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let project = get(&app, &project).await;
+    let repositories = project["repositories"].as_array().unwrap();
+    let names: Vec<&str> = repositories
+        .iter()
+        .map(|r| r["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["Org/team/api", "owner/zeta"]);
+    assert_eq!(repositories[1], repository);
+
+    let (_, list) = call(&app, Method::GET, "/projects", None).await;
+    assert_eq!(list[0]["repositories"], project["repositories"]);
+}
+
+#[tokio::test]
+async fn a_repository_is_attached_once_per_project() {
+    let (app, _dir) = app().await;
+    let hermes = create(&app, "Hermes").await;
+    let infra = create(&app, "Infra").await;
+
+    let (status, first) = attach(&app, &hermes, "https://github.com/owner/name").await;
+    assert_eq!(status, StatusCode::CREATED);
+    // The same repository after normalisation.
+    for url in [
+        "git@github.com:owner/name.git",
+        "ssh://git@GITHUB.com/owner/name/",
+    ] {
+        let (status, body) = attach(&app, &hermes, url).await;
+        assert_eq!(status, StatusCode::CONFLICT, "{url}");
+        assert_eq!(body["error"]["code"], "repository_already_attached");
+    }
+    // Another project may have it too, under another id.
+    let (status, second) = attach(&app, &infra, "git@github.com:owner/name").await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert_ne!(first["id"], second["id"]);
+    // The path is case-sensitive.
+    let (status, _) = attach(&app, &hermes, "https://github.com/Owner/Name").await;
+    assert_eq!(status, StatusCode::CREATED);
+}
+
+#[tokio::test]
+async fn rejects_an_invalid_repository_url() {
+    let (app, _dir) = app().await;
+    let project = create(&app, "Hermes").await;
+    for url in [
+        "http://github.com/owner/name",
+        "file:///srv/git/name",
+        "/srv/git/name",
+        "https://github.com/owner",
+    ] {
+        let (status, body) = attach(&app, &project, url).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{url}");
+        assert_eq!(body["error"]["code"], "invalid_repository_url");
+    }
+    assert_eq!(get(&app, &project).await["repositories"], json!([]));
+}
+
+#[tokio::test]
+async fn detaches_a_repository() {
+    let (app, _dir) = app().await;
+    let hermes = create(&app, "Hermes").await;
+    let infra = create(&app, "Infra").await;
+    let (_, repository) = attach(&app, &hermes, "https://github.com/owner/name").await;
+    let repository_id = repository["id"].as_str().unwrap();
+
+    // Not through another project.
+    let path = format!("/projects/{}/repositories/{repository_id}", id(&infra));
+    let (status, body) = call(&app, Method::DELETE, &path, None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(body["error"]["code"], "repository_not_found");
+
+    let path = format!("/projects/{}/repositories/{repository_id}", id(&hermes));
+    let (status, _) = call(&app, Method::DELETE, &path, None).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert_eq!(get(&app, &hermes).await["repositories"], json!([]));
+
+    let (status, body) = call(&app, Method::DELETE, &path, None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(body["error"]["code"], "repository_not_found");
+
+    // It can be attached again.
+    let (status, _) = attach(&app, &hermes, "https://github.com/owner/name").await;
+    assert_eq!(status, StatusCode::CREATED);
+}
+
+#[tokio::test]
+async fn repository_routes_check_the_project() {
+    let (app, _dir) = app().await;
+    let unknown = json!({ "id": uuid::Uuid::new_v4().to_string() });
+    let (status, body) = attach(&app, &unknown, "https://github.com/owner/name").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(body["error"]["code"], "project_not_found");
+
+    let path = format!(
+        "/projects/{}/repositories/{}",
+        id(&unknown),
+        uuid::Uuid::new_v4()
+    );
+    let (status, body) = call(&app, Method::DELETE, &path, None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(body["error"]["code"], "project_not_found");
+}
+
+#[tokio::test]
+async fn deleting_a_project_detaches_its_repositories() {
+    let (app, _dir) = app().await;
+    let hermes = create(&app, "Hermes").await;
+    let infra = create(&app, "Infra").await;
+    attach(&app, &hermes, "https://github.com/owner/name").await;
+    attach(&app, &infra, "https://github.com/owner/name").await;
+
+    let (status, _) = call(
+        &app,
+        Method::DELETE,
+        &format!("/projects/{}", id(&hermes)),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    // The other project keeps its own link.
+    assert_eq!(
+        get(&app, &infra).await["repositories"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
 }
