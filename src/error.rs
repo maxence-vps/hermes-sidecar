@@ -9,7 +9,7 @@ use axum::{
 use serde::Serialize;
 use utoipa::ToSchema;
 
-use crate::{hermes::HermesError, media::MediaError};
+use crate::{hermes::HermesError, media::MediaError, repository_url::InvalidRepositoryUrl};
 
 #[derive(Debug, thiserror::Error)]
 pub enum AppError {
@@ -33,6 +33,12 @@ pub enum AppError {
     ProjectNameTaken,
     #[error("{0}")]
     InvalidName(&'static str),
+    #[error("no repository with this id in this project")]
+    RepositoryNotFound,
+    #[error("this repository is already attached to the project")]
+    RepositoryAlreadyAttached,
+    #[error(transparent)]
+    InvalidRepositoryUrl(#[from] InvalidRepositoryUrl),
 }
 
 /// Body of every error response.
@@ -69,6 +75,13 @@ impl IntoResponse for AppError {
             AppError::ProjectNotFound => (StatusCode::NOT_FOUND, "project_not_found"),
             AppError::ProjectNameTaken => (StatusCode::CONFLICT, "project_name_taken"),
             AppError::InvalidName(_) => (StatusCode::UNPROCESSABLE_ENTITY, "invalid_name"),
+            AppError::RepositoryNotFound => (StatusCode::NOT_FOUND, "repository_not_found"),
+            AppError::RepositoryAlreadyAttached => {
+                (StatusCode::CONFLICT, "repository_already_attached")
+            }
+            AppError::InvalidRepositoryUrl(_) => {
+                (StatusCode::UNPROCESSABLE_ENTITY, "invalid_repository_url")
+            }
         };
         if status.is_server_error() {
             tracing::warn!(error = %self, "request failed");

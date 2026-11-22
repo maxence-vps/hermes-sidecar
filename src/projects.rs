@@ -18,6 +18,7 @@ use uuid::Uuid;
 
 use crate::{
     error::{AppError, ErrorBody, JsonBody},
+    repository_url,
     state::AppState,
 };
 
@@ -32,6 +33,8 @@ pub fn router() -> OpenApiRouter<AppState> {
     OpenApiRouter::new()
         .routes(routes!(list_projects, create_project))
         .routes(routes!(get_project, rename_project, delete_project))
+        .routes(routes!(attach_repository))
+        .routes(routes!(detach_repository))
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -68,6 +71,14 @@ pub struct ProjectInput {
     /// Trimmed, not empty, at most 100 characters, unique ignoring case.
     #[schema(example = "Hermes")]
     pub name: String,
+}
+
+/// Body of `POST /projects/{id}/repositories`.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct RepositoryInput {
+    /// `https://host/owner/name`, `git@host:owner/name` or `ssh://git@host/owner/name`.
+    #[schema(example = "git@github.com:owner/hermes-sidecar.git")]
+    pub url: String,
 }
 
 /// Lists every project, sorted by name ignoring case.
@@ -212,11 +223,110 @@ async fn delete_project(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// Attaches a git repository to a project.
+///
+/// The URL is normalised to `https://host/path` (host lowercased, trailing `.git` and `/`
+/// removed, path case kept) and the name is the whole path after the host.
+#[utoipa::path(
+    post,
+    path = "/projects/{id}/repositories",
+    tag = TAG,
+    security(("bearer" = [])),
+    params(("id" = String, Path, description = "Project id")),
+    request_body = RepositoryInput,
+    responses(
+        (status = CREATED, description = "The attached repository", body = Repository),
+        (status = BAD_REQUEST, description = "The body is not JSON (`invalid_body`)", body = ErrorBody),
+        (status = UNAUTHORIZED, description = "Missing or invalid API key", body = ErrorBody),
+        (status = NOT_FOUND, description = "No project with this id (`project_not_found`)", body = ErrorBody),
+        (status = CONFLICT, description = "The project already has this repository, after normalisation (`repository_already_attached`)", body = ErrorBody),
+        (status = UNPROCESSABLE_ENTITY, description = "Unsupported URL (`invalid_repository_url`), or no `url` (`invalid_body`)", body = ErrorBody),
+    )
+)]
+async fn attach_repository(
+    State(state): State<AppState>,
+    Path(project_id): Path<String>,
+    JsonBody(input): JsonBody<RepositoryInput>,
+) -> Result<(StatusCode, Json<Repository>), AppError> {
+    let project_id = parse_id(&project_id)?;
+    ensure_exists(&state.db, &project_id).await?;
+    let normalised = repository_url::normalise(&input.url)?;
+    let id = Uuid::new_v4().to_string();
+    sqlx::query("INSERT INTO project_repositories (id, project_id, url, name) VALUES (?, ?, ?, ?)")
+        .bind(&id)
+        .bind(&project_id)
+        .bind(&normalised.url)
+        .bind(&normalised.name)
+        .execute(&state.db)
+        .await
+        .map_err(|error| match &error {
+            sqlx::Error::Database(db) if db.is_unique_violation() => {
+                AppError::RepositoryAlreadyAttached
+            }
+            // The project was deleted in the meantime.
+            sqlx::Error::Database(db) if db.is_foreign_key_violation() => AppError::ProjectNotFound,
+            _ => error.into(),
+        })?;
+    Ok((
+        StatusCode::CREATED,
+        Json(Repository {
+            id,
+            name: normalised.name,
+            url: normalised.url,
+        }),
+    ))
+}
+
+/// Detaches a repository from a project.
+#[utoipa::path(
+    delete,
+    path = "/projects/{id}/repositories/{repository_id}",
+    tag = TAG,
+    security(("bearer" = [])),
+    params(
+        ("id" = String, Path, description = "Project id"),
+        ("repository_id" = String, Path, description = "Repository id, from the project's `repositories`"),
+    ),
+    responses(
+        (status = NO_CONTENT, description = "Detached"),
+        (status = UNAUTHORIZED, description = "Missing or invalid API key", body = ErrorBody),
+        (status = NOT_FOUND, description = "No project with this id (`project_not_found`), or no repository with this id in it (`repository_not_found`)", body = ErrorBody),
+    )
+)]
+async fn detach_repository(
+    State(state): State<AppState>,
+    Path((project_id, repository_id)): Path<(String, String)>,
+) -> Result<StatusCode, AppError> {
+    let project_id = parse_id(&project_id)?;
+    ensure_exists(&state.db, &project_id).await?;
+    let repository_id = Uuid::try_parse(&repository_id)
+        .map_err(|_| AppError::RepositoryNotFound)?
+        .to_string();
+    let deleted = sqlx::query("DELETE FROM project_repositories WHERE id = ? AND project_id = ?")
+        .bind(&repository_id)
+        .bind(&project_id)
+        .execute(&state.db)
+        .await?;
+    if deleted.rows_affected() == 0 {
+        return Err(AppError::RepositoryNotFound);
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
 /// Returns the id as stored (lowercase hyphenated UUID). Anything else cannot name a project.
 fn parse_id(id: &str) -> Result<String, AppError> {
     Uuid::try_parse(id)
         .map(|id| id.to_string())
         .map_err(|_| AppError::ProjectNotFound)
+}
+
+/// Fails with `project_not_found` unless the project exists.
+async fn ensure_exists(db: &SqlitePool, id: &str) -> Result<(), AppError> {
+    let found: Option<i64> = sqlx::query_scalar("SELECT 1 FROM projects WHERE id = ?")
+        .bind(id)
+        .fetch_optional(db)
+        .await?;
+    found.map(|_| ()).ok_or(AppError::ProjectNotFound)
 }
 
 /// Trims the name and checks it.
