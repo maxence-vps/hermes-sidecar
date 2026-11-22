@@ -66,18 +66,18 @@ async fn health_is_public() {
 async fn status_requires_the_shared_key() {
     let app = router(AppState::new(config(&fake_hermes().await)));
 
-    let (status, body) = send(app.clone(), "/api/status", None).await;
+    let (status, body) = send(app.clone(), "/status", None).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
     assert_eq!(body["error"]["code"], "unauthorized");
 
-    let (status, _) = send(app, "/api/status", Some("Bearer wrong-key")).await;
+    let (status, _) = send(app, "/status", Some("Bearer wrong-key")).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
 
 #[tokio::test]
 async fn status_reports_a_reachable_hermes() {
     let app = router(AppState::new(config(&fake_hermes().await)));
-    let (status, body) = send(app, "/api/status", Some(&format!("Bearer {KEY}"))).await;
+    let (status, body) = send(app, "/status", Some(&format!("Bearer {KEY}"))).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["sidecar"]["status"], "ok");
     assert_eq!(body["hermes"]["reachable"], true);
@@ -87,7 +87,7 @@ async fn status_reports_a_reachable_hermes() {
 #[tokio::test]
 async fn status_is_a_bad_gateway_when_hermes_is_down() {
     let app = router(AppState::new(config(&dead_url().await)));
-    let (status, body) = send(app, "/api/status", Some(&format!("Bearer {KEY}"))).await;
+    let (status, body) = send(app, "/status", Some(&format!("Bearer {KEY}"))).await;
     assert_eq!(status, StatusCode::BAD_GATEWAY);
     assert_eq!(body["error"]["code"], "hermes_unavailable");
 }

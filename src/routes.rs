@@ -6,9 +6,13 @@ use serde_json::{Value, json};
 use crate::{auth::require_api_key, error::AppError, state::AppState};
 
 pub fn router(state: AppState) -> Router {
-    let protected = Router::new().route("/api/status", get(status)).route_layer(
-        middleware::from_fn_with_state(state.clone(), require_api_key),
-    );
+    let protected =
+        Router::new()
+            .route("/status", get(status))
+            .route_layer(middleware::from_fn_with_state(
+                state.clone(),
+                require_api_key,
+            ));
 
     Router::new()
         .route("/health", get(health))

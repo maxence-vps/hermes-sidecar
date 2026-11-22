@@ -26,7 +26,9 @@ Every route except `/health` requires `Authorization: Bearer <API_SERVER_KEY>`, 
 | Method | Path | Auth | Description |
 |---|---|---|---|
 | `GET` | `/health` | no | Liveness probe. Does not call Hermes. |
-| `GET` | `/api/status` | yes | Checks the key and that Hermes is reachable. `502` if Hermes is down. |
+| `GET` | `/status` | yes | Checks the key and that Hermes is reachable. `502` if Hermes is down. |
+
+Behind the reverse proxy the sidecar is served under a path prefix (for example `https://hermes-api.example.test/sidecar/status`); the proxy strips the prefix, so routes here have none.
 
 Errors are JSON: `{"error": {"code": "...", "message": "..."}}`.
 
