@@ -20,6 +20,7 @@ Every route except `/health` requires `Authorization: Bearer <API_SERVER_KEY>`, 
 |---|---|---|---|
 | `API_SERVER_KEY` | yes | | Key shared with Hermes. The sidecar refuses to start without it. |
 | `HERMES_URL` | yes | | Hermes base URL on the internal network, e.g. `http://hermes:8642`. |
+| `DATABASE_PATH` | yes | | Absolute path of the sidecar's SQLite file, created on first start, e.g. `/data/sidecar.db`. Put it on a volume. See [Database](#database). |
 | `BIND_ADDR` | no | `0.0.0.0:8080` | Listen address. |
 | `HERMES_MEDIA_DIR` | no | | Hermes `native-inputs` folder, mounted read-only, that `GET /media/{sha256}` reads. Must be absolute. Unset, the route answers `503`. See [Images](#images). |
 | `API_DOCS_ENABLED` | no | `false` | Serves the OpenAPI spec and the Scalar docs (`true`/`false`, `1`/`0`, `yes`/`no`, `on`/`off`). Any other value stops startup. |
@@ -59,6 +60,14 @@ The sidecar reads the files from the Hermes data volume:
 
 See `docker-compose.example.yml`.
 
+## Database
+
+The sidecar keeps its own data (projects, see `GLOSSARY.md`) in a SQLite file at `DATABASE_PATH`, never in Hermes's database. See `docs/adr/0001-sqlite-for-sidecar-data.md`.
+
+- The file is created if missing, in WAL mode (SQLite also writes `-wal` and `-shm` files next to it, so mount a directory, not the file).
+- The migrations in `migrations/` are embedded in the binary and applied at startup. Startup fails if the file cannot be opened or migrated.
+- The image creates `/data` owned by `10000:10000`, so a new named volume mounted there is writable by the sidecar.
+
 ## OpenAPI docs
 
 The spec is generated at compile time with [utoipa](https://github.com/juhaku/utoipa) from the `#[utoipa::path]` annotations on the handlers, so a route registered with `routes!(...)` is always documented. The Scalar page embeds the spec and loads Scalar itself from a CDN, so the binary barely grows.
@@ -77,12 +86,12 @@ Tools are pinned with [mise](https://mise.jdx.dev).
 mise install          # Rust toolchain
 mise run test         # tests
 mise run lint         # rustfmt + clippy
-API_SERVER_KEY=dev-key HERMES_URL=http://localhost:8642 mise run run
+API_SERVER_KEY=dev-key HERMES_URL=http://localhost:8642 DATABASE_PATH="$PWD/sidecar.db" mise run run
 ```
 
 ## Docker
 
-The image is a static musl binary in an empty (`scratch`) image, with no TLS library: the sidecar only talks to Hermes in plain HTTP on the internal network, and HTTPS is handled by the reverse proxy.
+The image is a static musl binary in an empty (`scratch`) image, with no TLS library: the sidecar only talks to Hermes in plain HTTP on the internal network, and HTTPS is handled by the reverse proxy. It runs as `10000:10000`, the Hermes user.
 
 `.github/workflows/build.yml` builds the image and pushes it to `ghcr.io/maxence-vps/hermes-sidecar` on every push to `main`, tagged `latest` and `sha-<commit>`. Pin a `sha-` tag in production.
 
