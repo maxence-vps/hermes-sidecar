@@ -1,0 +1,38 @@
+name: Build & push image
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: build-image
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build & push
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTOR: ${{ github.actor }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          # Image named after the repo (ghcr.io/<owner>/<repo>)
+          IMAGE="ghcr.io/$(echo "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
+
+          echo "$GHCR_TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
+
+          docker build --pull \
+            --label org.opencontainers.image.source="https://github.com/${GITHUB_REPOSITORY}" \
+            -t "$IMAGE:latest" -t "$IMAGE:sha-$SHA" .
+
+          for tag in latest "sha-$SHA"; do docker push "$IMAGE:$tag"; done

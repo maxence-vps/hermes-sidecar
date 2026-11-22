@@ -14,6 +14,7 @@ RUN touch src/main.rs src/lib.rs && cargo build --release --locked \
     && strip target/release/hermes-sidecar
 
 FROM scratch
+LABEL org.opencontainers.image.description="Lightweight Rust sidecar API next to a self-hosted Hermes Agent instance"
 COPY --from=build /src/target/release/hermes-sidecar /hermes-sidecar
 USER 65534:65534
 EXPOSE 8080

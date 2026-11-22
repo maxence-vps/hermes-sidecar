@@ -47,6 +47,8 @@ API_SERVER_KEY=dev-key HERMES_URL=http://localhost:8642 mise run run
 
 The image is a static musl binary in an empty (`scratch`) image, with no TLS library: the sidecar only talks to Hermes in plain HTTP on the internal network, and HTTPS is handled by the reverse proxy.
 
+`.github/workflows/build.yml` builds the image and pushes it to `ghcr.io/maxence-vps/hermes-sidecar` on every push to `main`, tagged `latest` and `sha-<commit>`. Pin a `sha-` tag in production.
+
 ```sh
 docker build -t hermes-sidecar .
 ```
