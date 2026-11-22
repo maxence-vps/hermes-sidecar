@@ -1,0 +1,17 @@
+# Project tools, managed by mise (https://mise.jdx.dev).
+# Install: run `mise install` at the repository root.
+
+[tools]
+rust = { version = "1.100.0", components = "rustfmt,clippy" }
+
+[tasks.run]
+description = "Run the sidecar locally (needs API_SERVER_KEY and HERMES_URL)"
+run = "cargo run"
+
+[tasks.test]
+description = "Run the tests"
+run = "cargo test"
+
+[tasks.lint]
+description = "Check formatting and run clippy"
+run = ["cargo fmt --check", "cargo clippy --all-targets -- -D warnings"]
