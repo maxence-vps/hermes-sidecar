@@ -5,6 +5,8 @@ services:
     # Your existing Hermes service. Do not publish port 8642 on the host.
     image: your-hermes-image
     env_file: ~/.hermes/.env
+    volumes:
+      - hermes-data:/opt/data
     networks: [hermes-internal]
 
   sidecar:
@@ -15,11 +17,25 @@ services:
       BIND_ADDR: 0.0.0.0:8080
       RUST_LOG: info
       API_DOCS_ENABLED: "false" # true serves /openapi.json and /docs
+      HERMES_MEDIA_DIR: /media/native-inputs # GET /media/{sha256}
+    # Hermes's user: the stored images are readable by their owner only.
+    user: "10000:10000"
+    volumes:
+      # Only the image store, read-only (subpath needs Docker 26+).
+      - type: volume
+        source: hermes-data
+        target: /media/native-inputs
+        read_only: true
+        volume:
+          subpath: cache/documents/native-inputs
     networks: [hermes-internal]
     # Put your reverse proxy (Traefik, Caddy, nginx) in front for HTTPS.
     ports:
       - "127.0.0.1:8080:8080"
     restart: unless-stopped
+
+volumes:
+  hermes-data:
 
 networks:
   hermes-internal:

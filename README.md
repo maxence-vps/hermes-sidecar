@@ -19,6 +19,7 @@ Every route except `/health` requires `Authorization: Bearer <API_SERVER_KEY>`, 
 | `API_SERVER_KEY` | yes | | Key shared with Hermes. The sidecar refuses to start without it. |
 | `HERMES_URL` | yes | | Hermes base URL on the internal network, e.g. `http://hermes:8642`. |
 | `BIND_ADDR` | no | `0.0.0.0:8080` | Listen address. |
+| `HERMES_MEDIA_DIR` | no | | Hermes `native-inputs` folder, mounted read-only, that `GET /media/{sha256}` reads. Must be absolute. Unset, the route answers `503`. See [Images](#images). |
 | `API_DOCS_ENABLED` | no | `false` | Serves the OpenAPI spec and the Scalar docs (`true`/`false`, `1`/`0`, `yes`/`no`, `on`/`off`). Any other value stops startup. |
 | `RUST_LOG` | no | `info` | Log filter. |
 
@@ -28,12 +29,33 @@ Every route except `/health` requires `Authorization: Bearer <API_SERVER_KEY>`, 
 |---|---|---|---|
 | `GET` | `/health` | no | Liveness probe. Does not call Hermes. |
 | `GET` | `/status` | yes | Checks the key and that Hermes is reachable. `502` if Hermes is down. |
+| `GET` | `/media/{sha256}` | yes | Image a client attached to a message. See [Images](#images). |
 | `GET` | `/openapi.json` | no | OpenAPI spec. Only when `API_DOCS_ENABLED=true`. |
 | `GET` | `/docs` | no | [Scalar](https://scalar.com) API reference. Only when `API_DOCS_ENABLED=true`. |
 
 Behind the reverse proxy the sidecar is served under a path prefix (for example `https://hermes-api.example.test/sidecar/status`); the proxy strips the prefix, so routes here have none.
 
 Errors are JSON: `{"error": {"code": "...", "message": "..."}}`.
+
+## Images
+
+Hermes does not return the images clients send. It stores each one as `<native-inputs>/<sha256>/<name>`, the folder name being the SHA-256 of the file, and keeps only the line `[Image attached at: <path>]` in the message text. Its API server has no route that returns the file (the dashboard has `GET /api/media`, but behind its own session token).
+
+`GET /media/{sha256}` fills that gap. The client takes the folder name from the `[Image attached at: …]` path and gets the image back:
+
+- Only PNG, JPEG, GIF and WebP files are served (no SVG), up to 25 MiB, with their `Content-Type` and `X-Content-Type-Options: nosniff`.
+- The sidecar hashes the file before sending it. A file whose bytes no longer match its folder name is a `404`, like a missing one.
+- Symlinks are ignored, both for the folder and the file.
+- `ETag` is the quoted digest and `Cache-Control` is `private, max-age=31536000, immutable`, since the bytes of a digest never change. `If-None-Match` gets a `304` while the image still exists.
+- Hermes deletes media it no longer needs, so an old image can become a `404`.
+
+The sidecar reads the files from the Hermes data volume:
+
+- Mount only `cache/documents/native-inputs` (volume `subpath`, Docker 26+), read-only, so the sidecar does not see the rest of the Hermes data (`.env`, `auth.json`).
+- Run the sidecar as the Hermes user (`10000:10000` in the official image): the files are `0600`.
+- Set `HERMES_MEDIA_DIR` to the mount point.
+
+See `docker-compose.example.yml`.
 
 ## OpenAPI docs
 

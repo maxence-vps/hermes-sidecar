@@ -1,6 +1,6 @@
 //! Runtime configuration, read from the environment.
 
-use std::net::SocketAddr;
+use std::{net::SocketAddr, path::PathBuf};
 
 /// Default address the sidecar listens on.
 pub const DEFAULT_BIND_ADDR: &str = "0.0.0.0:8080";
@@ -17,6 +17,9 @@ pub struct Config {
     /// Serves the OpenAPI spec (`/openapi.json`) and the Scalar docs (`/docs`) when true
     /// (`API_DOCS_ENABLED`, false by default).
     pub docs_enabled: bool,
+    /// Hermes `native-inputs` folder, mounted read-only, that `GET /media/{sha256}` reads
+    /// (`HERMES_MEDIA_DIR`). Unset turns the route off: it answers 503.
+    pub media_dir: Option<PathBuf>,
 }
 
 // Keep the key out of logs and panic messages.
@@ -27,6 +30,7 @@ impl std::fmt::Debug for Config {
             .field("hermes_url", &self.hermes_url)
             .field("bind_addr", &self.bind_addr)
             .field("docs_enabled", &self.docs_enabled)
+            .field("media_dir", &self.media_dir)
             .finish()
     }
 }
@@ -43,6 +47,8 @@ pub enum ConfigError {
     InvalidBindAddr(String),
     #[error("{0} must be a boolean (true/false, 1/0, yes/no, on/off), got {1:?}")]
     InvalidBool(&'static str, String),
+    #[error("HERMES_MEDIA_DIR must be an absolute path, got {0:?}")]
+    InvalidMediaDir(String),
 }
 
 impl Config {
@@ -70,11 +76,19 @@ impl Config {
 
         let docs_enabled = boolean(&lookup, "API_DOCS_ENABLED", false)?;
 
+        let media_dir = match lookup("HERMES_MEDIA_DIR").map(|v| v.trim().to_owned()) {
+            None => None,
+            Some(value) if value.is_empty() => None,
+            Some(value) if PathBuf::from(&value).is_absolute() => Some(PathBuf::from(value)),
+            Some(value) => return Err(ConfigError::InvalidMediaDir(value)),
+        };
+
         Ok(Self {
             api_key,
             hermes_url,
             bind_addr,
             docs_enabled,
+            media_dir,
         })
     }
 }
@@ -210,6 +224,28 @@ mod tests {
         assert_eq!(
             result.unwrap_err(),
             ConfigError::InvalidBool("API_DOCS_ENABLED", "enabled".to_owned())
+        );
+    }
+
+    #[test]
+    fn reads_the_media_dir() {
+        let base = [
+            ("API_SERVER_KEY", "test-key"),
+            ("HERMES_URL", "http://hermes:8642"),
+        ];
+        let unset = Config::from_lookup(lookup(&base)).unwrap();
+        assert_eq!(unset.media_dir, None);
+
+        let mut pairs = base.to_vec();
+        pairs.push(("HERMES_MEDIA_DIR", "/media/native-inputs"));
+        let set = Config::from_lookup(lookup(&pairs)).unwrap();
+        assert_eq!(set.media_dir, Some(PathBuf::from("/media/native-inputs")));
+
+        let mut pairs = base.to_vec();
+        pairs.push(("HERMES_MEDIA_DIR", "native-inputs"));
+        assert_eq!(
+            Config::from_lookup(lookup(&pairs)).unwrap_err(),
+            ConfigError::InvalidMediaDir("native-inputs".to_owned())
         );
     }
 

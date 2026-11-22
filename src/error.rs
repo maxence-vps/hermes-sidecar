@@ -8,7 +8,7 @@ use axum::{
 use serde::Serialize;
 use utoipa::ToSchema;
 
-use crate::hermes::HermesError;
+use crate::{hermes::HermesError, media::MediaError};
 
 #[derive(Debug, thiserror::Error)]
 pub enum AppError {
@@ -16,6 +16,12 @@ pub enum AppError {
     Unauthorized,
     #[error(transparent)]
     Hermes(#[from] HermesError),
+    #[error("the media route is not configured (HERMES_MEDIA_DIR is unset)")]
+    MediaNotConfigured,
+    #[error("the digest must be a SHA-256 in hex (64 characters)")]
+    InvalidDigest,
+    #[error(transparent)]
+    Media(#[from] MediaError),
 }
 
 /// Body of every error response.
@@ -39,6 +45,14 @@ impl IntoResponse for AppError {
         let (status, code) = match &self {
             AppError::Unauthorized => (StatusCode::UNAUTHORIZED, "unauthorized"),
             AppError::Hermes(_) => (StatusCode::BAD_GATEWAY, "hermes_unavailable"),
+            AppError::MediaNotConfigured => {
+                (StatusCode::SERVICE_UNAVAILABLE, "media_not_configured")
+            }
+            AppError::InvalidDigest => (StatusCode::BAD_REQUEST, "invalid_digest"),
+            AppError::Media(MediaError::NotFound) => (StatusCode::NOT_FOUND, "media_not_found"),
+            AppError::Media(MediaError::Io(_)) => {
+                (StatusCode::INTERNAL_SERVER_ERROR, "media_unreadable")
+            }
         };
         if status.is_server_error() {
             tracing::warn!(error = %self, "request failed");
