@@ -2,6 +2,7 @@
 
 use axum::{
     Json,
+    extract::{FromRequest, Request, rejection::JsonRejection},
     http::{HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
 };
@@ -22,6 +23,16 @@ pub enum AppError {
     InvalidDigest,
     #[error(transparent)]
     Media(#[from] MediaError),
+    #[error("invalid request body: {}", .0.body_text())]
+    InvalidBody(#[from] JsonRejection),
+    #[error("database error: {0}")]
+    Database(#[from] sqlx::Error),
+    #[error("no project with this id")]
+    ProjectNotFound,
+    #[error("a project with this name already exists")]
+    ProjectNameTaken,
+    #[error("{0}")]
+    InvalidName(&'static str),
 }
 
 /// Body of every error response.
@@ -53,6 +64,11 @@ impl IntoResponse for AppError {
             AppError::Media(MediaError::Io(_)) => {
                 (StatusCode::INTERNAL_SERVER_ERROR, "media_unreadable")
             }
+            AppError::InvalidBody(rejection) => (rejection.status(), "invalid_body"),
+            AppError::Database(_) => (StatusCode::INTERNAL_SERVER_ERROR, "database_error"),
+            AppError::ProjectNotFound => (StatusCode::NOT_FOUND, "project_not_found"),
+            AppError::ProjectNameTaken => (StatusCode::CONFLICT, "project_name_taken"),
+            AppError::InvalidName(_) => (StatusCode::UNPROCESSABLE_ENTITY, "invalid_name"),
         };
         if status.is_server_error() {
             tracing::warn!(error = %self, "request failed");
@@ -70,5 +86,22 @@ impl IntoResponse for AppError {
                 .insert(header::WWW_AUTHENTICATE, HeaderValue::from_static("Bearer"));
         }
         response
+    }
+}
+
+/// `Json<T>` whose rejection (wrong content type, malformed JSON, missing field) is answered in
+/// the same JSON shape as every other error, with the code `invalid_body`.
+pub struct JsonBody<T>(pub T);
+
+impl<S, T> FromRequest<S> for JsonBody<T>
+where
+    Json<T>: FromRequest<S, Rejection = JsonRejection>,
+    S: Send + Sync,
+{
+    type Rejection = AppError;
+
+    async fn from_request(request: Request, state: &S) -> Result<Self, Self::Rejection> {
+        let Json(value) = Json::<T>::from_request(request, state).await?;
+        Ok(Self(value))
     }
 }
