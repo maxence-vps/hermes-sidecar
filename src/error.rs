@@ -39,6 +39,8 @@ pub enum AppError {
     RepositoryAlreadyAttached,
     #[error(transparent)]
     InvalidRepositoryUrl(#[from] InvalidRepositoryUrl),
+    #[error("the conversation id must be 1 to 255 printable ASCII characters, without spaces or /")]
+    InvalidConversationId,
 }
 
 /// Body of every error response.
@@ -81,6 +83,9 @@ impl IntoResponse for AppError {
             }
             AppError::InvalidRepositoryUrl(_) => {
                 (StatusCode::UNPROCESSABLE_ENTITY, "invalid_repository_url")
+            }
+            AppError::InvalidConversationId => {
+                (StatusCode::UNPROCESSABLE_ENTITY, "invalid_conversation_id")
             }
         };
         if status.is_server_error() {

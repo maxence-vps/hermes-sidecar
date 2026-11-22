@@ -35,7 +35,11 @@ pub fn router() -> OpenApiRouter<AppState> {
         .routes(routes!(get_project, rename_project, delete_project))
         .routes(routes!(attach_repository))
         .routes(routes!(detach_repository))
+        .routes(routes!(attach_conversation, detach_conversation))
 }
+
+/// Longest conversation id, in characters.
+pub const MAX_CONVERSATION_ID_LEN: usize = 255;
 
 #[derive(Debug, Serialize, ToSchema)]
 pub struct Project {
@@ -313,6 +317,91 @@ async fn detach_repository(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// Puts a conversation in a project. A conversation in another project moves to this one.
+///
+/// The sidecar does not check that the conversation exists in Hermes.
+#[utoipa::path(
+    put,
+    path = "/projects/{id}/conversations/{conversation_id}",
+    tag = TAG,
+    security(("bearer" = [])),
+    params(
+        ("id" = String, Path, description = "Project id"),
+        ("conversation_id" = String, Path, description = "Hermes session id", example = "20260412_101500_ab12cd"),
+    ),
+    responses(
+        (status = NO_CONTENT, description = "The conversation is in this project, whether it was already or not"),
+        (status = UNAUTHORIZED, description = "Missing or invalid API key", body = ErrorBody),
+        (status = NOT_FOUND, description = "No project with this id (`project_not_found`)", body = ErrorBody),
+        (status = UNPROCESSABLE_ENTITY, description = "Invalid conversation id (`invalid_conversation_id`)", body = ErrorBody),
+    )
+)]
+async fn attach_conversation(
+    State(state): State<AppState>,
+    Path((project_id, conversation_id)): Path<(String, String)>,
+) -> Result<StatusCode, AppError> {
+    let project_id = parse_id(&project_id)?;
+    ensure_exists(&state.db, &project_id).await?;
+    validate_conversation_id(&conversation_id)?;
+    sqlx::query(
+        "INSERT INTO project_conversations (conversation_id, project_id) VALUES (?, ?) \
+         ON CONFLICT (conversation_id) DO UPDATE SET project_id = excluded.project_id",
+    )
+    .bind(&conversation_id)
+    .bind(&project_id)
+    .execute(&state.db)
+    .await
+    .map_err(|error| match &error {
+        // The project was deleted in the meantime.
+        sqlx::Error::Database(db) if db.is_foreign_key_violation() => AppError::ProjectNotFound,
+        _ => error.into(),
+    })?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Takes a conversation out of a project. Succeeds also when it was not in this project, and
+/// then changes nothing.
+#[utoipa::path(
+    delete,
+    path = "/projects/{id}/conversations/{conversation_id}",
+    tag = TAG,
+    security(("bearer" = [])),
+    params(
+        ("id" = String, Path, description = "Project id"),
+        ("conversation_id" = String, Path, description = "Hermes session id", example = "20260412_101500_ab12cd"),
+    ),
+    responses(
+        (status = NO_CONTENT, description = "The conversation is not in this project"),
+        (status = UNAUTHORIZED, description = "Missing or invalid API key", body = ErrorBody),
+        (status = NOT_FOUND, description = "No project with this id (`project_not_found`)", body = ErrorBody),
+        (status = UNPROCESSABLE_ENTITY, description = "Invalid conversation id (`invalid_conversation_id`)", body = ErrorBody),
+    )
+)]
+async fn detach_conversation(
+    State(state): State<AppState>,
+    Path((project_id, conversation_id)): Path<(String, String)>,
+) -> Result<StatusCode, AppError> {
+    let project_id = parse_id(&project_id)?;
+    ensure_exists(&state.db, &project_id).await?;
+    validate_conversation_id(&conversation_id)?;
+    // Only from this project: a conversation that moved elsewhere stays there.
+    sqlx::query("DELETE FROM project_conversations WHERE conversation_id = ? AND project_id = ?")
+        .bind(&conversation_id)
+        .bind(&project_id)
+        .execute(&state.db)
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Not empty, at most 255 characters, printable ASCII without spaces, no `/` (which a client
+/// could still send percent-encoded).
+fn validate_conversation_id(id: &str) -> Result<(), AppError> {
+    let valid = !id.is_empty()
+        && id.len() <= MAX_CONVERSATION_ID_LEN
+        && id.bytes().all(|b| b.is_ascii_graphic() && b != b'/');
+    valid.then_some(()).ok_or(AppError::InvalidConversationId)
+}
+
 /// Returns the id as stored (lowercase hyphenated UUID). Anything else cannot name a project.
 fn parse_id(id: &str) -> Result<String, AppError> {
     Uuid::try_parse(id)
@@ -450,6 +539,16 @@ mod tests {
     #[test]
     fn compares_names_ignoring_case_beyond_ascii() {
         assert_eq!(name_key("Équipe"), name_key("éQUIPE"));
+    }
+
+    #[test]
+    fn checks_conversation_ids() {
+        for id in ["20260412_101500_ab12cd", "a", &"x".repeat(255), "a.b-c:d~e"] {
+            assert!(validate_conversation_id(id).is_ok(), "{id:?}");
+        }
+        for id in ["", &"x".repeat(256), "a/b", "a b", "é", "a\tb", "a\u{7f}"] {
+            assert!(validate_conversation_id(id).is_err(), "{id:?}");
+        }
     }
 
     #[test]
