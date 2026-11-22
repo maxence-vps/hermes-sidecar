@@ -15,9 +15,14 @@ use tower::ServiceExt;
 const KEY: &str = "test-key";
 
 fn config(hermes_url: &str) -> Config {
+    config_with_docs(hermes_url, None)
+}
+
+fn config_with_docs(hermes_url: &str, docs: Option<&str>) -> Config {
     Config::from_lookup(|name| match name {
         "API_SERVER_KEY" => Some(KEY.to_owned()),
         "HERMES_URL" => Some(hermes_url.to_owned()),
+        "API_DOCS_ENABLED" => docs.map(str::to_owned),
         _ => None,
     })
     .unwrap()
@@ -40,18 +45,20 @@ async fn dead_url() -> String {
     format!("http://{addr}")
 }
 
+async fn send_raw(app: Router, request: Request<Body>) -> (StatusCode, String) {
+    let response = app.oneshot(request).await.unwrap();
+    let status = response.status();
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    (status, String::from_utf8(bytes.to_vec()).unwrap())
+}
+
 async fn send(app: Router, path: &str, auth: Option<&str>) -> (StatusCode, Value) {
     let mut request = Request::get(path);
     if let Some(auth) = auth {
         request = request.header(header::AUTHORIZATION, auth);
     }
-    let response = app
-        .oneshot(request.body(Body::empty()).unwrap())
-        .await
-        .unwrap();
-    let status = response.status();
-    let bytes = response.into_body().collect().await.unwrap().to_bytes();
-    (status, serde_json::from_slice(&bytes).unwrap())
+    let (status, body) = send_raw(app, request.body(Body::empty()).unwrap()).await;
+    (status, serde_json::from_str(&body).unwrap())
 }
 
 #[tokio::test]
@@ -90,4 +97,69 @@ async fn status_is_a_bad_gateway_when_hermes_is_down() {
     let (status, body) = send(app, "/status", Some(&format!("Bearer {KEY}"))).await;
     assert_eq!(status, StatusCode::BAD_GATEWAY);
     assert_eq!(body["error"]["code"], "hermes_unavailable");
+}
+
+#[tokio::test]
+async fn docs_are_not_served_by_default() {
+    let app = router(AppState::new(config(&dead_url().await)));
+    for path in ["/openapi.json", "/docs"] {
+        let request = Request::get(path).body(Body::empty()).unwrap();
+        let (status, _) = send_raw(app.clone(), request).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{path}");
+    }
+}
+
+#[tokio::test]
+async fn openapi_spec_describes_the_routes_when_enabled() {
+    let app = router(AppState::new(config_with_docs(
+        &dead_url().await,
+        Some("true"),
+    )));
+    let (status, spec) = send(app, "/openapi.json", None).await;
+    assert_eq!(status, StatusCode::OK);
+
+    assert!(spec["paths"]["/health"]["get"].is_object());
+    let status_op = &spec["paths"]["/status"]["get"];
+    assert_eq!(status_op["security"], json!([{ "bearer": [] }]));
+    for code in ["200", "401", "502"] {
+        assert!(status_op["responses"][code].is_object(), "response {code}");
+    }
+    assert_eq!(
+        spec["components"]["securitySchemes"]["bearer"]["scheme"],
+        "bearer"
+    );
+    // The docs routes themselves are not part of the API description.
+    assert!(spec["paths"]["/docs"].is_null());
+    // No proxy prefix: no servers entry, so clients use the current origin.
+    assert!(spec["servers"].is_null());
+}
+
+#[tokio::test]
+async fn openapi_spec_follows_the_proxy_prefix() {
+    let app = router(AppState::new(config_with_docs(
+        &dead_url().await,
+        Some("true"),
+    )));
+    let request = Request::get("/openapi.json")
+        .header("x-forwarded-prefix", "/sidecar")
+        .body(Body::empty())
+        .unwrap();
+    let (status, body) = send_raw(app, request).await;
+    assert_eq!(status, StatusCode::OK);
+    let spec: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(spec["servers"], json!([{ "url": "/sidecar" }]));
+}
+
+#[tokio::test]
+async fn scalar_docs_page_embeds_the_spec_when_enabled() {
+    let app = router(AppState::new(config_with_docs(
+        &dead_url().await,
+        Some("true"),
+    )));
+    let request = Request::get("/docs").body(Body::empty()).unwrap();
+    let (status, html) = send_raw(app, request).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(html.contains("<title>hermes-sidecar API</title>"));
+    assert!(html.contains("@scalar/api-reference"));
+    assert!(html.contains("\"/status\""));
 }

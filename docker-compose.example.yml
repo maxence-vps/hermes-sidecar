@@ -14,6 +14,7 @@ services:
       HERMES_URL: http://hermes:8642
       BIND_ADDR: 0.0.0.0:8080
       RUST_LOG: info
+      API_DOCS_ENABLED: "false" # true serves /openapi.json and /docs
     networks: [hermes-internal]
     # Put your reverse proxy (Traefik, Caddy, nginx) in front for HTTPS.
     ports:

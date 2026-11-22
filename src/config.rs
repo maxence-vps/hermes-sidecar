@@ -14,6 +14,9 @@ pub struct Config {
     pub hermes_url: String,
     /// Address to listen on.
     pub bind_addr: SocketAddr,
+    /// Serves the OpenAPI spec (`/openapi.json`) and the Scalar docs (`/docs`) when true
+    /// (`API_DOCS_ENABLED`, false by default).
+    pub docs_enabled: bool,
 }
 
 // Keep the key out of logs and panic messages.
@@ -23,6 +26,7 @@ impl std::fmt::Debug for Config {
             .field("api_key", &"<redacted>")
             .field("hermes_url", &self.hermes_url)
             .field("bind_addr", &self.bind_addr)
+            .field("docs_enabled", &self.docs_enabled)
             .finish()
     }
 }
@@ -37,6 +41,8 @@ pub enum ConfigError {
     InvalidHermesUrl,
     #[error("BIND_ADDR is not a valid socket address: {0}")]
     InvalidBindAddr(String),
+    #[error("{0} must be a boolean (true/false, 1/0, yes/no, on/off), got {1:?}")]
+    InvalidBool(&'static str, String),
 }
 
 impl Config {
@@ -62,11 +68,32 @@ impl Config {
             .parse()
             .map_err(|_| ConfigError::InvalidBindAddr(bind))?;
 
+        let docs_enabled = boolean(&lookup, "API_DOCS_ENABLED", false)?;
+
         Ok(Self {
             api_key,
             hermes_url,
             bind_addr,
+            docs_enabled,
         })
+    }
+}
+
+/// Reads an optional boolean. Unset or empty means `default`; any other unknown value is an error,
+/// so a typo never silently turns a feature on or off.
+fn boolean(
+    lookup: &impl Fn(&str) -> Option<String>,
+    name: &'static str,
+    default: bool,
+) -> Result<bool, ConfigError> {
+    let Some(value) = lookup(name) else {
+        return Ok(default);
+    };
+    match value.trim().to_ascii_lowercase().as_str() {
+        "" => Ok(default),
+        "true" | "1" | "yes" | "on" => Ok(true),
+        "false" | "0" | "no" | "off" => Ok(false),
+        _ => Err(ConfigError::InvalidBool(name, value)),
     }
 }
 
@@ -137,6 +164,53 @@ mod tests {
             ("HERMES_URL", "hermes:8642"),
         ]));
         assert_eq!(result.unwrap_err(), ConfigError::InvalidHermesUrl);
+    }
+
+    #[test]
+    fn docs_are_disabled_by_default() {
+        let config = Config::from_lookup(lookup(&[
+            ("API_SERVER_KEY", "test-key"),
+            ("HERMES_URL", "http://hermes:8642"),
+        ]))
+        .unwrap();
+        assert!(!config.docs_enabled);
+    }
+
+    #[test]
+    fn parses_the_docs_flag() {
+        for (value, expected) in [
+            ("true", true),
+            ("TRUE", true),
+            ("1", true),
+            ("yes", true),
+            ("on", true),
+            ("false", false),
+            ("0", false),
+            ("no", false),
+            ("off", false),
+            ("", false),
+        ] {
+            let config = Config::from_lookup(lookup(&[
+                ("API_SERVER_KEY", "test-key"),
+                ("HERMES_URL", "http://hermes:8642"),
+                ("API_DOCS_ENABLED", value),
+            ]))
+            .unwrap();
+            assert_eq!(config.docs_enabled, expected, "value {value:?}");
+        }
+    }
+
+    #[test]
+    fn rejects_an_invalid_docs_flag() {
+        let result = Config::from_lookup(lookup(&[
+            ("API_SERVER_KEY", "test-key"),
+            ("HERMES_URL", "http://hermes:8642"),
+            ("API_DOCS_ENABLED", "enabled"),
+        ]));
+        assert_eq!(
+            result.unwrap_err(),
+            ConfigError::InvalidBool("API_DOCS_ENABLED", "enabled".to_owned())
+        );
     }
 
     #[test]
