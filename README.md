@@ -1,5 +1,7 @@
 # hermes-sidecar
 
+> Personal project released under the [GNU GPL v3](LICENSE). Copyright (C) 2026 Maxence Mottard.
+
 Lightweight Rust API that runs next to a self-hosted [Hermes Agent](https://hermes-agent.nousresearch.com) instance and adds custom endpoints to it.
 
 Hermes plugins can add tools, hooks and commands to the agent, but not HTTP routes to its API server. This sidecar fills that gap: clients call it with the same API key as Hermes, and it talks to Hermes over the internal Docker network.
@@ -89,3 +91,9 @@ docker build -t hermes-sidecar .
 ```
 
 See `docker-compose.example.yml` for running it next to Hermes.
+
+## License
+
+Copyright (C) 2026 Maxence Mottard.
+
+This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version. It is distributed without any warranty. See [LICENSE](LICENSE).
