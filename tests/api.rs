@@ -30,9 +30,19 @@ fn config_with(hermes_url: &str, docs: Option<&str>, media_dir: Option<&Path>) -
         "HERMES_URL" => Some(hermes_url.to_owned()),
         "API_DOCS_ENABLED" => docs.map(str::to_owned),
         "HERMES_MEDIA_DIR" => media_dir.map(|dir| dir.to_str().unwrap().to_owned()),
+        "DATABASE_PATH" => Some("/unused/sidecar.db".to_owned()),
         _ => None,
     })
     .unwrap()
+}
+
+/// The router over `config`. Its database is an in-memory SQLite opened on first use, enough for
+/// routes that do not store anything.
+fn app(config: Config) -> Router {
+    let db = sqlx::sqlite::SqlitePoolOptions::new()
+        .connect_lazy("sqlite::memory:")
+        .unwrap();
+    router(AppState::new(config, db))
 }
 
 /// Starts a fake Hermes that answers `GET /health` and returns its base URL.
@@ -70,7 +80,7 @@ async fn send(app: Router, path: &str, auth: Option<&str>) -> (StatusCode, Value
 
 #[tokio::test]
 async fn health_is_public() {
-    let app = router(AppState::new(config(&dead_url().await)));
+    let app = app(config(&dead_url().await));
     let (status, body) = send(app, "/health", None).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["status"], "ok");
@@ -78,7 +88,7 @@ async fn health_is_public() {
 
 #[tokio::test]
 async fn status_requires_the_shared_key() {
-    let app = router(AppState::new(config(&fake_hermes().await)));
+    let app = app(config(&fake_hermes().await));
 
     let (status, body) = send(app.clone(), "/status", None).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
@@ -90,7 +100,7 @@ async fn status_requires_the_shared_key() {
 
 #[tokio::test]
 async fn status_reports_a_reachable_hermes() {
-    let app = router(AppState::new(config(&fake_hermes().await)));
+    let app = app(config(&fake_hermes().await));
     let (status, body) = send(app, "/status", Some(&format!("Bearer {KEY}"))).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["sidecar"]["status"], "ok");
@@ -100,7 +110,7 @@ async fn status_reports_a_reachable_hermes() {
 
 #[tokio::test]
 async fn status_is_a_bad_gateway_when_hermes_is_down() {
-    let app = router(AppState::new(config(&dead_url().await)));
+    let app = app(config(&dead_url().await));
     let (status, body) = send(app, "/status", Some(&format!("Bearer {KEY}"))).await;
     assert_eq!(status, StatusCode::BAD_GATEWAY);
     assert_eq!(body["error"]["code"], "hermes_unavailable");
@@ -108,7 +118,7 @@ async fn status_is_a_bad_gateway_when_hermes_is_down() {
 
 #[tokio::test]
 async fn docs_are_not_served_by_default() {
-    let app = router(AppState::new(config(&dead_url().await)));
+    let app = app(config(&dead_url().await));
     for path in ["/openapi.json", "/docs"] {
         let request = Request::get(path).body(Body::empty()).unwrap();
         let (status, _) = send_raw(app.clone(), request).await;
@@ -118,10 +128,7 @@ async fn docs_are_not_served_by_default() {
 
 #[tokio::test]
 async fn openapi_spec_describes_the_routes_when_enabled() {
-    let app = router(AppState::new(config_with_docs(
-        &dead_url().await,
-        Some("true"),
-    )));
+    let app = app(config_with_docs(&dead_url().await, Some("true")));
     let (status, spec) = send(app, "/openapi.json", None).await;
     assert_eq!(status, StatusCode::OK);
 
@@ -151,10 +158,7 @@ async fn openapi_spec_describes_the_routes_when_enabled() {
 
 #[tokio::test]
 async fn openapi_spec_follows_the_proxy_prefix() {
-    let app = router(AppState::new(config_with_docs(
-        &dead_url().await,
-        Some("true"),
-    )));
+    let app = app(config_with_docs(&dead_url().await, Some("true")));
     let request = Request::get("/openapi.json")
         .header("x-forwarded-prefix", "/sidecar")
         .body(Body::empty())
@@ -167,10 +171,7 @@ async fn openapi_spec_follows_the_proxy_prefix() {
 
 #[tokio::test]
 async fn scalar_docs_page_embeds_the_spec_when_enabled() {
-    let app = router(AppState::new(config_with_docs(
-        &dead_url().await,
-        Some("true"),
-    )));
+    let app = app(config_with_docs(&dead_url().await, Some("true")));
     let request = Request::get("/docs").body(Body::empty()).unwrap();
     let (status, html) = send_raw(app, request).await;
     assert_eq!(status, StatusCode::OK);
@@ -199,11 +200,7 @@ fn store(root: &Path, folder: &str, name: &str, bytes: &[u8]) {
 }
 
 fn media_app(root: &Path) -> Router {
-    router(AppState::new(config_with(
-        "http://127.0.0.1:9",
-        None,
-        Some(root),
-    )))
+    app(config_with("http://127.0.0.1:9", None, Some(root)))
 }
 
 async fn get_media(app: Router, digest: &str, extra: &[(&str, &str)]) -> axum::response::Response {
@@ -348,7 +345,7 @@ async fn media_ignores_symlinks() {
 
 #[tokio::test]
 async fn media_is_503_when_not_configured() {
-    let app = router(AppState::new(config(&dead_url().await)));
+    let app = app(config(&dead_url().await));
     let response = get_media(app, &digest(IMAGE), &[]).await;
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     assert_eq!(error_code(response).await, "media_not_configured");

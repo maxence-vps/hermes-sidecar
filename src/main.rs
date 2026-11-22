@@ -1,4 +1,4 @@
-use hermes_sidecar::{AppState, Config, router};
+use hermes_sidecar::{AppState, Config, db, router};
 use tokio::net::TcpListener;
 use tracing_subscriber::EnvFilter;
 
@@ -21,9 +21,17 @@ async fn main() {
         }
     };
 
+    let db = match db::open(&config.database_path).await {
+        Ok(db) => db,
+        Err(error) => {
+            tracing::error!(%error, path = %config.database_path.display(), "cannot open the database");
+            std::process::exit(1);
+        }
+    };
+
     let bind_addr = config.bind_addr;
     let hermes_url = config.hermes_url.clone();
-    let app = router(AppState::new(config));
+    let app = router(AppState::new(config, db));
 
     let listener = match TcpListener::bind(bind_addr).await {
         Ok(listener) => listener,

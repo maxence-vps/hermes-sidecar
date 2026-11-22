@@ -20,6 +20,8 @@ pub struct Config {
     /// Hermes `native-inputs` folder, mounted read-only, that `GET /media/{sha256}` reads
     /// (`HERMES_MEDIA_DIR`). Unset turns the route off: it answers 503.
     pub media_dir: Option<PathBuf>,
+    /// The sidecar's SQLite file (`DATABASE_PATH`), created on first start. Absolute.
+    pub database_path: PathBuf,
 }
 
 // Keep the key out of logs and panic messages.
@@ -31,6 +33,7 @@ impl std::fmt::Debug for Config {
             .field("bind_addr", &self.bind_addr)
             .field("docs_enabled", &self.docs_enabled)
             .field("media_dir", &self.media_dir)
+            .field("database_path", &self.database_path)
             .finish()
     }
 }
@@ -49,6 +52,8 @@ pub enum ConfigError {
     InvalidBool(&'static str, String),
     #[error("HERMES_MEDIA_DIR must be an absolute path, got {0:?}")]
     InvalidMediaDir(String),
+    #[error("DATABASE_PATH must be an absolute path, got {0:?}")]
+    InvalidDatabasePath(String),
 }
 
 impl Config {
@@ -83,12 +88,19 @@ impl Config {
             Some(value) => return Err(ConfigError::InvalidMediaDir(value)),
         };
 
+        let database_path = required(&lookup, "DATABASE_PATH")?;
+        if !PathBuf::from(&database_path).is_absolute() {
+            return Err(ConfigError::InvalidDatabasePath(database_path));
+        }
+        let database_path = PathBuf::from(database_path);
+
         Ok(Self {
             api_key,
             hermes_url,
             bind_addr,
             docs_enabled,
             media_dir,
+            database_path,
         })
     }
 }
@@ -142,11 +154,13 @@ mod tests {
             ("API_SERVER_KEY", "test-key"),
             ("HERMES_URL", "http://hermes:8642/"),
             ("BIND_ADDR", "127.0.0.1:9000"),
+            ("DATABASE_PATH", "/data/sidecar.db"),
         ]))
         .unwrap();
         assert_eq!(config.api_key, "test-key");
         assert_eq!(config.hermes_url, "http://hermes:8642");
         assert_eq!(config.bind_addr, "127.0.0.1:9000".parse().unwrap());
+        assert_eq!(config.database_path, PathBuf::from("/data/sidecar.db"));
     }
 
     #[test]
@@ -154,6 +168,7 @@ mod tests {
         let config = Config::from_lookup(lookup(&[
             ("API_SERVER_KEY", "test-key"),
             ("HERMES_URL", "http://hermes:8642"),
+            ("DATABASE_PATH", "/data/sidecar.db"),
         ]))
         .unwrap();
         assert_eq!(config.bind_addr, DEFAULT_BIND_ADDR.parse().unwrap());
@@ -185,6 +200,7 @@ mod tests {
         let config = Config::from_lookup(lookup(&[
             ("API_SERVER_KEY", "test-key"),
             ("HERMES_URL", "http://hermes:8642"),
+            ("DATABASE_PATH", "/data/sidecar.db"),
         ]))
         .unwrap();
         assert!(!config.docs_enabled);
@@ -207,6 +223,7 @@ mod tests {
             let config = Config::from_lookup(lookup(&[
                 ("API_SERVER_KEY", "test-key"),
                 ("HERMES_URL", "http://hermes:8642"),
+                ("DATABASE_PATH", "/data/sidecar.db"),
                 ("API_DOCS_ENABLED", value),
             ]))
             .unwrap();
@@ -219,6 +236,7 @@ mod tests {
         let result = Config::from_lookup(lookup(&[
             ("API_SERVER_KEY", "test-key"),
             ("HERMES_URL", "http://hermes:8642"),
+            ("DATABASE_PATH", "/data/sidecar.db"),
             ("API_DOCS_ENABLED", "enabled"),
         ]));
         assert_eq!(
@@ -232,6 +250,7 @@ mod tests {
         let base = [
             ("API_SERVER_KEY", "test-key"),
             ("HERMES_URL", "http://hermes:8642"),
+            ("DATABASE_PATH", "/data/sidecar.db"),
         ];
         let unset = Config::from_lookup(lookup(&base)).unwrap();
         assert_eq!(unset.media_dir, None);
@@ -250,10 +269,37 @@ mod tests {
     }
 
     #[test]
+    fn requires_an_absolute_database_path() {
+        let base = [
+            ("API_SERVER_KEY", "test-key"),
+            ("HERMES_URL", "http://hermes:8642"),
+        ];
+        assert_eq!(
+            Config::from_lookup(lookup(&base)).unwrap_err(),
+            ConfigError::Missing("DATABASE_PATH")
+        );
+
+        let mut pairs = base.to_vec();
+        pairs.push(("DATABASE_PATH", " "));
+        assert_eq!(
+            Config::from_lookup(lookup(&pairs)).unwrap_err(),
+            ConfigError::Empty("DATABASE_PATH")
+        );
+
+        let mut pairs = base.to_vec();
+        pairs.push(("DATABASE_PATH", "sidecar.db"));
+        assert_eq!(
+            Config::from_lookup(lookup(&pairs)).unwrap_err(),
+            ConfigError::InvalidDatabasePath("sidecar.db".to_owned())
+        );
+    }
+
+    #[test]
     fn debug_output_hides_the_key() {
         let config = Config::from_lookup(lookup(&[
             ("API_SERVER_KEY", "test-key"),
             ("HERMES_URL", "http://hermes:8642"),
+            ("DATABASE_PATH", "/data/sidecar.db"),
         ]))
         .unwrap();
         assert!(!format!("{config:?}").contains("test-key"));

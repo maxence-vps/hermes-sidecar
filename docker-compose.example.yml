@@ -18,9 +18,12 @@ services:
       RUST_LOG: info
       API_DOCS_ENABLED: "false" # true serves /openapi.json and /docs
       HERMES_MEDIA_DIR: /media/native-inputs # GET /media/{sha256}
+      DATABASE_PATH: /data/sidecar.db # projects
     # Hermes's user: the stored images are readable by their owner only.
     user: "10000:10000"
     volumes:
+      # The sidecar's own database.
+      - sidecar-data:/data
       # Only the image store, read-only (subpath needs Docker 26+).
       - type: volume
         source: hermes-data
@@ -36,6 +39,7 @@ services:
 
 volumes:
   hermes-data:
+  sidecar-data:
 
 networks:
   hermes-internal:
