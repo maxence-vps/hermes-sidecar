@@ -21,7 +21,7 @@ use crate::{
     auth::require_api_key,
     docs,
     error::{AppError, ErrorBody},
-    media, projects, sessions,
+    media, models, projects, sessions,
     state::AppState,
     stream,
 };
@@ -39,6 +39,7 @@ pub const BEARER_SCHEME: &str = "bearer";
     modifiers(&BearerAuth),
     tags(
         (name = "sidecar", description = "Sidecar endpoints"),
+        (name = "models", description = "Model aliases and provider options, proxied from Hermes"),
         (name = "projects", description = "Projects group Conversations (Hermes sessions) and git Repositories"),
         (name = "sessions", description = "Hermes sessions (Conversations), proxied with their side effects on projects"),
         (name = "streams", description = "Agent turns relayed from Hermes, which go on when the client disconnects"),
@@ -66,6 +67,7 @@ pub fn router(state: AppState) -> Router {
     let protected = OpenApiRouter::new()
         .routes(routes!(status))
         .routes(routes!(get_media))
+        .merge(models::router())
         .merge(projects::router())
         .merge(sessions::router())
         .merge(stream::router())
