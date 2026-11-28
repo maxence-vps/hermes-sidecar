@@ -19,6 +19,16 @@ pub enum AppError {
     Hermes(#[from] HermesError),
     #[error("the media route is not configured (HERMES_MEDIA_DIR is unset)")]
     MediaNotConfigured,
+    #[error("the files route is not configured (HERMES_FILES_DIR is unset)")]
+    FilesNotConfigured,
+    #[error("no file found at this path")]
+    FileNotFound,
+    #[error("the file path is invalid")]
+    InvalidFilePath,
+    #[error("the file cannot be read: {0}")]
+    FileUnreadable(String),
+    #[error("file exceeds maximum allowed size")]
+    FileTooLarge,
     #[error("the digest must be a SHA-256 in hex (64 characters)")]
     InvalidDigest,
     #[error(transparent)]
@@ -77,6 +87,13 @@ impl IntoResponse for AppError {
             AppError::MediaNotConfigured => {
                 (StatusCode::SERVICE_UNAVAILABLE, "media_not_configured")
             }
+            AppError::FilesNotConfigured => {
+                (StatusCode::SERVICE_UNAVAILABLE, "files_not_configured")
+            }
+            AppError::FileNotFound => (StatusCode::NOT_FOUND, "file_not_found"),
+            AppError::InvalidFilePath => (StatusCode::BAD_REQUEST, "invalid_file_path"),
+            AppError::FileUnreadable(_) => (StatusCode::INTERNAL_SERVER_ERROR, "file_unreadable"),
+            AppError::FileTooLarge => (StatusCode::PAYLOAD_TOO_LARGE, "file_too_large"),
             AppError::InvalidDigest => (StatusCode::BAD_REQUEST, "invalid_digest"),
             AppError::Media(MediaError::NotFound) => (StatusCode::NOT_FOUND, "media_not_found"),
             AppError::Media(MediaError::Io(_)) => {

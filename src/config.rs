@@ -20,6 +20,9 @@ pub struct Config {
     /// Hermes `native-inputs` folder, mounted read-only, that `GET /media/{sha256}` reads
     /// (`HERMES_MEDIA_DIR`). Unset turns the route off: it answers 503.
     pub media_dir: Option<PathBuf>,
+    /// Root directory that `GET /files/{*path}` reads, mounted read-only
+    /// (`HERMES_FILES_DIR`). Unset turns the route off: it answers 503.
+    pub files_dir: Option<PathBuf>,
     /// The sidecar's SQLite file (`DATABASE_PATH`), created on first start. Absolute.
     pub database_path: PathBuf,
 }
@@ -33,6 +36,7 @@ impl std::fmt::Debug for Config {
             .field("bind_addr", &self.bind_addr)
             .field("docs_enabled", &self.docs_enabled)
             .field("media_dir", &self.media_dir)
+            .field("files_dir", &self.files_dir)
             .field("database_path", &self.database_path)
             .finish()
     }
@@ -52,6 +56,8 @@ pub enum ConfigError {
     InvalidBool(&'static str, String),
     #[error("HERMES_MEDIA_DIR must be an absolute path, got {0:?}")]
     InvalidMediaDir(String),
+    #[error("HERMES_FILES_DIR must be an absolute path, got {0:?}")]
+    InvalidFilesDir(String),
     #[error("DATABASE_PATH must be an absolute path, got {0:?}")]
     InvalidDatabasePath(String),
 }
@@ -88,6 +94,13 @@ impl Config {
             Some(value) => return Err(ConfigError::InvalidMediaDir(value)),
         };
 
+        let files_dir = match lookup("HERMES_FILES_DIR").map(|v| v.trim().to_owned()) {
+            None => None,
+            Some(value) if value.is_empty() => None,
+            Some(value) if PathBuf::from(&value).is_absolute() => Some(PathBuf::from(value)),
+            Some(value) => return Err(ConfigError::InvalidFilesDir(value)),
+        };
+
         let database_path = required(&lookup, "DATABASE_PATH")?;
         if !PathBuf::from(&database_path).is_absolute() {
             return Err(ConfigError::InvalidDatabasePath(database_path));
@@ -100,6 +113,7 @@ impl Config {
             bind_addr,
             docs_enabled,
             media_dir,
+            files_dir,
             database_path,
         })
     }
@@ -265,6 +279,29 @@ mod tests {
         assert_eq!(
             Config::from_lookup(lookup(&pairs)).unwrap_err(),
             ConfigError::InvalidMediaDir("native-inputs".to_owned())
+        );
+    }
+
+    #[test]
+    fn reads_the_files_dir() {
+        let base = [
+            ("API_SERVER_KEY", "test-key"),
+            ("HERMES_URL", "http://hermes:8642"),
+            ("DATABASE_PATH", "/data/sidecar.db"),
+        ];
+        let unset = Config::from_lookup(lookup(&base)).unwrap();
+        assert_eq!(unset.files_dir, None);
+
+        let mut pairs = base.to_vec();
+        pairs.push(("HERMES_FILES_DIR", "/opt/data/projects"));
+        let set = Config::from_lookup(lookup(&pairs)).unwrap();
+        assert_eq!(set.files_dir, Some(PathBuf::from("/opt/data/projects")));
+
+        let mut pairs = base.to_vec();
+        pairs.push(("HERMES_FILES_DIR", "projects"));
+        assert_eq!(
+            Config::from_lookup(lookup(&pairs)).unwrap_err(),
+            ConfigError::InvalidFilesDir("projects".to_owned())
         );
     }
 

@@ -5,6 +5,7 @@ pub mod config;
 pub mod db;
 pub mod docs;
 pub mod error;
+pub mod files;
 pub mod hermes;
 pub mod media;
 pub mod projects;
