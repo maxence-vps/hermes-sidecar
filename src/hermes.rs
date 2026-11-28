@@ -10,9 +10,8 @@ use crate::config::Config;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// Timeout for quick probes such as the health check.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
-/// Timeout for the session lifecycle calls (list, create, read, update, delete, fork) and the
-/// model catalog.
-pub(crate) const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+/// Timeout for the session lifecycle calls (list, create, read, update, delete, fork).
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Debug, thiserror::Error)]
 pub enum HermesError {

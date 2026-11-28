@@ -33,8 +33,6 @@ Every route except `/health` requires `Authorization: Bearer <API_SERVER_KEY>`, 
 | `GET` | `/health` | no | Liveness probe. Does not call Hermes. |
 | `GET` | `/status` | yes | Checks the key and that Hermes is reachable. `502` if Hermes is down. |
 | `GET` | `/media/{sha256}` | yes | Image a client attached to a message. See [Images](#images). |
-| `GET` | `/models` | yes | Model aliases Hermes serves. See [Models](#models). |
-| `GET` | `/models/options` | yes | Models grouped by provider, with `include_unconfigured`. See [Models](#models). |
 | `GET` | `/sessions` | yes | Lists Hermes sessions, with `limit` and `offset`. See [Sessions](#sessions). |
 | `POST` | `/sessions` | yes | Creates a Hermes session from `{"model", "provider"}` (both optional). |
 | `GET` | `/sessions/{id}` | yes | One Hermes session. |
@@ -77,18 +75,6 @@ The sidecar reads the files from the Hermes data volume:
 - Mount only `cache/documents/native-inputs` (volume `subpath`, Docker 26+), read-only, so the sidecar does not see the rest of the Hermes data (`.env`, `auth.json`).
 - Run the sidecar as the Hermes user (`10000:10000` in the official image): the files are `0600`.
 - Set `HERMES_MEDIA_DIR` to the mount point.
-
-## Models
-
-The model catalog goes through the sidecar, for the client's settings screen and model picker. Each route answers with Hermes's JSON body as is. Nothing is cached, so a provider configured in Hermes shows up at once.
-
-- `GET /models` calls Hermes `GET /v1/models`: the model aliases (`hermes-agent`, …).
-- `GET /models/options` calls Hermes `GET /api/model/options`: the models grouped by provider (OpenRouter, Anthropic, OpenAI, …). It forwards `include_unconfigured` (`true` or `false`, optional) and no other parameter; left out, Hermes uses its default.
-
-Errors:
-
-- `400 invalid_request` when `include_unconfigured` is neither `true` nor `false`.
-- `502 hermes_unavailable` when Hermes is unreachable, fails, or answers with something that is not JSON.
 
 ## Sessions
 
