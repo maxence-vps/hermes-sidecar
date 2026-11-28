@@ -7,6 +7,7 @@ pub mod docs;
 pub mod error;
 pub mod hermes;
 pub mod media;
+pub mod models;
 pub mod projects;
 pub mod repository_url;
 pub mod routes;
