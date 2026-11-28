@@ -47,6 +47,8 @@ pub enum AppError {
     SessionNotFound,
     #[error("a turn is already running in this conversation")]
     TurnAlreadyRunning,
+    #[error("no stream active for this conversation")]
+    StreamNotActive,
     #[error("the stream relay stopped before Hermes answered")]
     RelayFailed,
 }
@@ -98,6 +100,7 @@ impl IntoResponse for AppError {
             AppError::InvalidRequest(_) => (StatusCode::BAD_REQUEST, "invalid_request"),
             AppError::SessionNotFound => (StatusCode::NOT_FOUND, "session_not_found"),
             AppError::TurnAlreadyRunning => (StatusCode::CONFLICT, "turn_already_running"),
+            AppError::StreamNotActive => (StatusCode::NOT_FOUND, "stream_not_active"),
             AppError::RelayFailed => (StatusCode::INTERNAL_SERVER_ERROR, "relay_failed"),
         };
         if status.is_server_error() {
