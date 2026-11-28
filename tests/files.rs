@@ -232,8 +232,7 @@ async fn files_returns_404_for_nonexistent_file() {
     let root = tempfile::tempdir().unwrap();
     let app = app(Some(root.path()));
 
-    let response =
-        get_file_request(app, "/files/missing.md", Some(&format!("Bearer {KEY}"))).await;
+    let response = get_file_request(app, "/files/missing.md", Some(&format!("Bearer {KEY}"))).await;
 
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
     let body = response_json(response).await;
