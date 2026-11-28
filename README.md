@@ -70,8 +70,6 @@ The sidecar reads the files from the Hermes data volume:
 - Run the sidecar as the Hermes user (`10000:10000` in the official image): the files are `0600`.
 - Set `HERMES_MEDIA_DIR` to the mount point.
 
-See `docker-compose.example.yml`.
-
 ## Chat streams
 
 When a client initiates an agent turn directly through Hermes `POST /api/sessions/{id}/chat/stream`, Hermes interrupts and cancels the turn if the client HTTP connection drops (such as when iOS backgrounds the app or switches networks).
@@ -162,18 +160,6 @@ mise run test         # tests
 mise run lint         # rustfmt + clippy
 API_SERVER_KEY=dev-key HERMES_URL=http://localhost:8642 DATABASE_PATH="$PWD/sidecar.db" mise run run
 ```
-
-## Docker
-
-The image is a static musl binary in an empty (`scratch`) image, with no TLS library: the sidecar only talks to Hermes in plain HTTP on the internal network, and HTTPS is handled by the reverse proxy. It runs as `10000:10000`, the Hermes user.
-
-`.github/workflows/build.yml` builds the image and pushes it to `ghcr.io/maxence-vps/hermes-sidecar` on every push to `main`, tagged `latest` and `sha-<commit>`. Pin a `sha-` tag in production.
-
-```sh
-docker build -t hermes-sidecar .
-```
-
-See `docker-compose.example.yml` for running it next to Hermes.
 
 ## License
 
