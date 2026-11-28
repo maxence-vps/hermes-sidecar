@@ -15,12 +15,14 @@ use std::{
 };
 
 use axum::{
+    Json,
     body::{Body, Bytes},
     extract::{Path, State, rejection::BytesRejection},
-    http::{HeaderName, header},
+    http::{HeaderMap, HeaderName, header},
     response::{IntoResponse, Response},
 };
 use futures_util::stream::{self, Stream, StreamExt};
+use serde::Serialize;
 use serde_json::Value;
 use tokio::sync::{oneshot, watch};
 use utoipa::ToSchema;
@@ -42,7 +44,10 @@ const IDLE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
 /// The stream routes, to merge into the protected router.
 pub fn router() -> OpenApiRouter<AppState> {
-    OpenApiRouter::new().routes(routes!(chat_stream))
+    OpenApiRouter::new()
+        .routes(routes!(chat_stream))
+        .routes(routes!(stream_status))
+        .routes(routes!(attach_stream))
 }
 
 /// Body of `POST /sessions/{id}/chat/stream`, the same as for Hermes. Only documents it: the
@@ -99,6 +104,93 @@ async fn chat_stream(
         Ok(Err(error)) => Err(hermes_error(error)),
         Err(_) => Err(AppError::RelayFailed),
     }
+}
+
+/// Status of the active stream for a session.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct StreamStatusResponse {
+    /// Whether an agent turn is currently streaming for this session.
+    #[schema(example = true)]
+    pub is_active: bool,
+    /// Message id of the active turn, if known.
+    #[schema(example = "msg_01UrVhedgopyjZZmYfBHSF4c")]
+    pub message_id: Option<String>,
+    /// UTC timestamp when the turn started, in ISO 8601 / RFC 3339 format.
+    #[schema(example = "2026-11-28T09:00:00Z")]
+    pub started_at: Option<String>,
+}
+
+/// Checks if an agent turn is currently streaming for this conversation.
+#[utoipa::path(
+    get,
+    path = "/sessions/{id}/stream/status",
+    tag = TAG,
+    security(("bearer" = [])),
+    params(
+        ("id" = String, Path, description = "Hermes session id", example = "20260412_101500_ab12cd"),
+    ),
+    responses(
+        (status = OK, description = "Stream status for this session", body = StreamStatusResponse),
+        (status = UNAUTHORIZED, description = "Missing or invalid API key", body = ErrorBody),
+        (status = UNPROCESSABLE_ENTITY, description = "Invalid session id (`invalid_conversation_id`)", body = ErrorBody),
+    )
+)]
+async fn stream_status(
+    State(state): State<AppState>,
+    Path(session_id): Path<String>,
+) -> Result<Json<StreamStatusResponse>, AppError> {
+    validate_session_id(&session_id)?;
+    if let Some(turn) = state.streams.get_turn(&session_id) {
+        Ok(Json(StreamStatusResponse {
+            is_active: true,
+            message_id: turn.message_id(),
+            started_at: Some(turn.started_at().to_owned()),
+        }))
+    } else {
+        Ok(Json(StreamStatusResponse {
+            is_active: false,
+            message_id: None,
+            started_at: None,
+        }))
+    }
+}
+
+/// Attaches to an active stream for a session, replaying buffered events then streaming live.
+#[utoipa::path(
+    get,
+    path = "/sessions/{id}/stream",
+    tag = TAG,
+    security(("bearer" = [])),
+    params(
+        ("id" = String, Path, description = "Hermes session id", example = "20260412_101500_ab12cd"),
+        ("Last-Event-ID" = Option<String>, Header, description = "ID of the last received event, to resume the stream"),
+    ),
+    responses(
+        (status = OK, description = "The events of the active turn, as Server-Sent Events", body = String, content_type = "text/event-stream"),
+        (status = UNAUTHORIZED, description = "Missing or invalid API key", body = ErrorBody),
+        (status = NOT_FOUND, description = "No stream is currently active for this conversation (`stream_not_active`)", body = ErrorBody),
+        (status = UNPROCESSABLE_ENTITY, description = "Invalid session id (`invalid_conversation_id`)", body = ErrorBody),
+    )
+)]
+async fn attach_stream(
+    State(state): State<AppState>,
+    Path(session_id): Path<String>,
+    headers: HeaderMap,
+) -> Result<Response, AppError> {
+    validate_session_id(&session_id)?;
+    let turn = state
+        .streams
+        .get_turn(&session_id)
+        .ok_or(AppError::StreamNotActive)?;
+
+    let last_event_id = headers
+        .get("last-event-id")
+        .and_then(|val| val.to_str().ok())
+        .and_then(|s| s.parse::<usize>().ok());
+    let start_index = last_event_id.unwrap_or(0);
+
+    let events = turn.events_from(start_index);
+    Ok(sse_response(events))
 }
 
 /// A conversation id that is also safe as a URL path segment: `.` and `..` would be resolved as
@@ -189,6 +281,9 @@ async fn read_events(turn: &Turn, response: reqwest::Response) {
             }
         };
         for event in framer.push(&chunk) {
+            if let Some(msg_id) = extract_message_id(&event) {
+                turn.set_message_id(msg_id);
+            }
             let done = event_name(&event).as_deref() == Some("done");
             turn.push(event);
             if done {
@@ -197,6 +292,9 @@ async fn read_events(turn: &Turn, response: reqwest::Response) {
         }
     }
     if let Some(event) = framer.finish() {
+        if let Some(msg_id) = extract_message_id(&event) {
+            turn.set_message_id(msg_id);
+        }
         turn.push(event);
     }
 }
@@ -272,6 +370,80 @@ fn field<'a>(line: &'a str, name: &str) -> Option<&'a str> {
     Some(value.strip_prefix(' ').unwrap_or(value))
 }
 
+/// Extracts a message ID from an SSE event data payload, if present.
+fn extract_message_id(event: &[u8]) -> Option<String> {
+    let text = std::str::from_utf8(event).ok()?;
+    let mut data_lines = Vec::new();
+    for line in text.lines() {
+        if let Some(val) = field(line, "data") {
+            data_lines.push(val);
+        }
+    }
+    if data_lines.is_empty() {
+        return None;
+    }
+    let data: Value = serde_json::from_str(&data_lines.join("\n")).ok()?;
+    if let Some(id) = data.get("message_id").and_then(Value::as_str) {
+        return Some(id.to_owned());
+    }
+    if let Some(id) = data
+        .get("message")
+        .and_then(|m| m.get("id"))
+        .and_then(Value::as_str)
+    {
+        return Some(id.to_owned());
+    }
+    None
+}
+
+/// Prepends an `id: {id}\n` field to the event if not already present, skipping comment frames.
+fn add_event_id(event: &[u8], id: usize) -> Bytes {
+    if let Ok(text) = std::str::from_utf8(event) {
+        let trimmed = text.trim_start();
+        if trimmed.starts_with(':') && !trimmed.contains("\ndata:") {
+            return Bytes::copy_from_slice(event);
+        }
+        if text
+            .lines()
+            .any(|l| l.starts_with("id:") || l.starts_with("id :"))
+        {
+            return Bytes::copy_from_slice(event);
+        }
+        let mut formatted = format!("id: {id}\n");
+        formatted.push_str(text);
+        Bytes::from(formatted)
+    } else {
+        Bytes::copy_from_slice(event)
+    }
+}
+
+/// Formats current UTC time as an ISO 8601 / RFC 3339 string.
+fn iso8601_now() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let now = SystemTime::now();
+    let duration = now.duration_since(UNIX_EPOCH).unwrap_or_default();
+    let secs = duration.as_secs();
+
+    let days = (secs / 86400) as i64;
+    let time_secs = (secs % 86400) as u32;
+    let hours = time_secs / 3600;
+    let minutes = (time_secs % 3600) / 60;
+    let seconds = time_secs % 60;
+
+    let z = days + 719468;
+    let era = (if z >= 0 { z } else { z - 146096 }) / 146097;
+    let doe = (z - era * 146097) as u32;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = (yoe as i64) + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+
+    format!("{y:04}-{m:02}-{d:02}T{hours:02}:{minutes:02}:{seconds:02}Z")
+}
+
 /// Turns running in Hermes through the sidecar, by session id. A turn is removed as soon as it
 /// finishes: Hermes then has the whole exchange, so its events are not kept.
 #[derive(Clone, Default)]
@@ -283,6 +455,11 @@ impl StreamRelay {
     /// True while a turn started through the sidecar runs in this session.
     pub fn is_running(&self, session_id: &str) -> bool {
         self.read().contains_key(session_id)
+    }
+
+    /// The active turn running in this session, if any.
+    pub(crate) fn get_turn(&self, session_id: &str) -> Option<Arc<Turn>> {
+        self.read().get(session_id).cloned()
     }
 
     /// The events of the turn running in this session, from its first one, until it finishes.
@@ -339,8 +516,10 @@ impl Drop for TurnHandle {
 }
 
 /// One turn: the events Hermes sent so far, shared with every client that follows it.
-struct Turn {
+pub(crate) struct Turn {
     log: watch::Sender<Log>,
+    started_at: String,
+    message_id: RwLock<Option<String>>,
 }
 
 #[derive(Default)]
@@ -355,11 +534,37 @@ impl Turn {
     fn new() -> Self {
         Self {
             log: watch::Sender::new(Log::default()),
+            started_at: iso8601_now(),
+            message_id: RwLock::new(None),
         }
     }
 
     fn push(&self, event: Bytes) {
-        self.log.send_modify(|log| log.events.push(event));
+        self.log.send_modify(|log| {
+            let id = log.events.len() + 1;
+            log.events.push(add_event_id(&event, id));
+        });
+    }
+
+    fn set_message_id(&self, id: String) {
+        let mut guard = self
+            .message_id
+            .write()
+            .unwrap_or_else(PoisonError::into_inner);
+        if guard.is_none() {
+            *guard = Some(id);
+        }
+    }
+
+    pub fn message_id(&self) -> Option<String> {
+        self.message_id
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    pub fn started_at(&self) -> &str {
+        &self.started_at
     }
 
     fn finish(&self) {
@@ -368,13 +573,21 @@ impl Turn {
 
     /// Every event from the first one, then each new one as it comes, until the turn finishes.
     fn events(&self) -> impl Stream<Item = Bytes> + Send + use<> {
-        replay(self.log.subscribe())
+        self.events_from(0)
+    }
+
+    /// Events starting from `start_index` in the buffer, then live events until done.
+    pub fn events_from(&self, start_index: usize) -> impl Stream<Item = Bytes> + Send + use<> {
+        replay(self.log.subscribe(), start_index)
     }
 }
 
-fn replay(receiver: watch::Receiver<Log>) -> impl Stream<Item = Bytes> + Send + 'static {
+fn replay(
+    receiver: watch::Receiver<Log>,
+    start_index: usize,
+) -> impl Stream<Item = Bytes> + Send + 'static {
     stream::unfold(
-        (receiver, 0, false),
+        (receiver, start_index, false),
         |(mut receiver, next, mut closed)| async move {
             loop {
                 // The borrow must end before any await: it holds a lock.
@@ -510,7 +723,39 @@ mod tests {
         assert!(relay.subscribe("a").is_none());
 
         for events in [early.collect::<Vec<_>>().await, late.collect().await] {
-            assert_eq!(text(&events), ["one\n\n", "two\n\n"]);
+            assert_eq!(text(&events), ["id: 1\none\n\n", "id: 2\ntwo\n\n"]);
         }
+    }
+
+    #[tokio::test]
+    async fn replays_from_specific_index() {
+        let relay = StreamRelay::default();
+        let handle = relay.begin("a").unwrap();
+        handle.turn.push(Bytes::from_static(b"one\n\n"));
+        handle.turn.push(Bytes::from_static(b"two\n\n"));
+        handle.turn.push(Bytes::from_static(b"three\n\n"));
+
+        let resumed = handle.turn.events_from(2);
+        drop(handle);
+        let events = resumed.collect::<Vec<_>>().await;
+        assert_eq!(text(&events), ["id: 3\nthree\n\n"]);
+    }
+
+    #[test]
+    fn extracts_message_id_from_events() {
+        assert_eq!(
+            extract_message_id(b"event: assistant.delta\ndata: {\"message_id\":\"msg_123\"}\n\n"),
+            Some("msg_123".to_owned())
+        );
+        assert_eq!(
+            extract_message_id(
+                b"event: message.started\ndata: {\"message\":{\"id\":\"msg_456\"}}\n\n"
+            ),
+            Some("msg_456".to_owned())
+        );
+        assert_eq!(
+            extract_message_id(b"event: run.started\ndata: {}\n\n"),
+            None
+        );
     }
 }

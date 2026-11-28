@@ -34,6 +34,8 @@ Every route except `/health` requires `Authorization: Bearer <API_SERVER_KEY>`, 
 | `GET` | `/status` | yes | Checks the key and that Hermes is reachable. `502` if Hermes is down. |
 | `GET` | `/media/{sha256}` | yes | Image a client attached to a message. See [Images](#images). |
 | `POST` | `/sessions/{id}/chat/stream` | yes | Relays an agent turn from Hermes. Decoupled from the client. See [Chat streams](#chat-streams). |
+| `GET` | `/sessions/{id}/stream/status` | yes | Active stream status for a conversation. See [Chat streams](#chat-streams). |
+| `GET` | `/sessions/{id}/stream` | yes | Attaches to an ongoing stream, replaying buffered events. See [Chat streams](#chat-streams). |
 | `GET` | `/projects` | yes | Every project, sorted by name ignoring case. See [Projects](#projects). |
 | `POST` | `/projects` | yes | Creates a project from `{"name"}`. `201`. |
 | `GET` | `/projects/{id}` | yes | One project. |
@@ -80,6 +82,13 @@ When a client initiates an agent turn directly through Hermes `POST /api/session
 - Runs in a background task that reads Hermes's SSE stream to completion, even if the client disconnects mid-stream.
 - Buffers events of the ongoing turn in memory and streams them back to the caller as Server-Sent Events (`run.started`, `assistant.delta`, `tool.*`, `assistant.completed`, `run.*`, `done`).
 - Returns `409 turn_already_running` if a turn is already running for the session, `404 session_not_found` if the session does not exist, `400 invalid_request` if the body is invalid, and `502 hermes_unavailable` if Hermes cannot be reached.
+
+`GET /sessions/{id}/stream/status` checks whether an agent turn is currently running for this conversation:
+- Returns `{"is_active": bool, "message_id": string | null, "started_at": string | null}`.
+
+`GET /sessions/{id}/stream` allows a client to attach to an ongoing turn (e.g. on reconnection or from another device):
+- If active, returns `200 OK` (`text/event-stream`), replays buffered events in order (or events after `Last-Event-ID` if provided), and continues streaming live events until `done`.
+- If no stream is active, returns `404 stream_not_active`.
 
 ## Database
 
