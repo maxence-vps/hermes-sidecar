@@ -33,6 +33,7 @@ Every route except `/health` requires `Authorization: Bearer <API_SERVER_KEY>`, 
 | `GET` | `/health` | no | Liveness probe. Does not call Hermes. |
 | `GET` | `/status` | yes | Checks the key and that Hermes is reachable. `502` if Hermes is down. |
 | `GET` | `/media/{sha256}` | yes | Image a client attached to a message. See [Images](#images). |
+| `POST` | `/sessions/{id}/chat/stream` | yes | Relays an agent turn from Hermes. Decoupled from the client. See [Chat streams](#chat-streams). |
 | `GET` | `/projects` | yes | Every project, sorted by name ignoring case. See [Projects](#projects). |
 | `POST` | `/projects` | yes | Creates a project from `{"name"}`. `201`. |
 | `GET` | `/projects/{id}` | yes | One project. |
@@ -68,6 +69,17 @@ The sidecar reads the files from the Hermes data volume:
 - Set `HERMES_MEDIA_DIR` to the mount point.
 
 See `docker-compose.example.yml`.
+
+## Chat streams
+
+When a client initiates an agent turn directly through Hermes `POST /api/sessions/{id}/chat/stream`, Hermes interrupts and cancels the turn if the client HTTP connection drops (such as when iOS backgrounds the app or switches networks).
+
+`POST /sessions/{id}/chat/stream` proxies the request to Hermes and decouples the connection:
+
+- Accepts `{"message": ...}` (same schema as Hermes).
+- Runs in a background task that reads Hermes's SSE stream to completion, even if the client disconnects mid-stream.
+- Buffers events of the ongoing turn in memory and streams them back to the caller as Server-Sent Events (`run.started`, `assistant.delta`, `tool.*`, `assistant.completed`, `run.*`, `done`).
+- Returns `409 turn_already_running` if a turn is already running for the session, `404 session_not_found` if the session does not exist, `400 invalid_request` if the body is invalid, and `502 hermes_unavailable` if Hermes cannot be reached.
 
 ## Database
 

@@ -8,3 +8,6 @@ _Avoid_: session (Hermes's internal name), chat, thread
 
 **Repository**: A git repository attached to a Project, known by its remote URL. A Project has any number of Repositories, each at most once; the same Repository may be attached to several Projects.
 _Avoid_: repo
+
+**Turn**: A single exchange where the user sends a message and Hermes runs its agent until completion.
+_Avoid_: run, interaction
