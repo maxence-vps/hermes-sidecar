@@ -80,7 +80,6 @@ pub struct ChatStreamRequest {
         (status = BAD_REQUEST, description = "The body is not a JSON object with a `message` (`invalid_request`)", body = ErrorBody),
         (status = UNAUTHORIZED, description = "Missing or invalid API key", body = ErrorBody),
         (status = NOT_FOUND, description = "Hermes has no session with this id (`session_not_found`)", body = ErrorBody),
-        (status = CONFLICT, description = "A turn is already running in this conversation (`turn_already_running`)", body = ErrorBody),
         (status = UNPROCESSABLE_ENTITY, description = "Invalid session id (`invalid_conversation_id`)", body = ErrorBody),
         (status = BAD_GATEWAY, description = "Hermes is unreachable or failed (`hermes_unavailable`)", body = ErrorBody),
     )
@@ -448,35 +447,38 @@ fn iso8601_now() -> String {
 /// finishes: Hermes then has the whole exchange, so its events are not kept.
 #[derive(Clone, Default)]
 pub struct StreamRelay {
-    turns: Arc<RwLock<HashMap<String, Arc<Turn>>>>,
+    turns: Arc<RwLock<HashMap<String, Vec<Arc<Turn>>>>>,
 }
 
 impl StreamRelay {
     /// True while a turn started through the sidecar runs in this session.
     pub fn is_running(&self, session_id: &str) -> bool {
-        self.read().contains_key(session_id)
+        self.read()
+            .get(session_id)
+            .map(|turns| !turns.is_empty())
+            .unwrap_or(false)
     }
 
     /// The active turn running in this session, if any.
     pub(crate) fn get_turn(&self, session_id: &str) -> Option<Arc<Turn>> {
-        self.read().get(session_id).cloned()
+        self.read()
+            .get(session_id)
+            .and_then(|turns| turns.first().cloned())
     }
 
     /// The events of the turn running in this session, from its first one, until it finishes.
     pub fn subscribe(&self, session_id: &str) -> Option<impl Stream<Item = Bytes> + Send + use<>> {
-        let turn = self.read().get(session_id).cloned()?;
+        let turn = self.get_turn(session_id)?;
         Some(turn.events())
     }
 
-    /// Registers a new turn in this session, unless one is already running.
+    /// Registers a new turn in this session.
     fn begin(&self, session_id: &str) -> Result<TurnHandle, AppError> {
         let turn = Arc::new(Turn::new());
-        match self.write().entry(session_id.to_owned()) {
-            Entry::Occupied(_) => return Err(AppError::TurnAlreadyRunning),
-            Entry::Vacant(entry) => {
-                entry.insert(Arc::clone(&turn));
-            }
-        }
+        self.write()
+            .entry(session_id.to_owned())
+            .or_default()
+            .push(Arc::clone(&turn));
         Ok(TurnHandle {
             relay: self.clone(),
             session_id: session_id.to_owned(),
@@ -485,11 +487,11 @@ impl StreamRelay {
     }
 
     // The map stays consistent even if a holder panicked: every change is a single call.
-    fn read(&self) -> RwLockReadGuard<'_, HashMap<String, Arc<Turn>>> {
+    fn read(&self) -> RwLockReadGuard<'_, HashMap<String, Vec<Arc<Turn>>>> {
         self.turns.read().unwrap_or_else(PoisonError::into_inner)
     }
 
-    fn write(&self) -> RwLockWriteGuard<'_, HashMap<String, Arc<Turn>>> {
+    fn write(&self) -> RwLockWriteGuard<'_, HashMap<String, Vec<Arc<Turn>>>> {
         self.turns.write().unwrap_or_else(PoisonError::into_inner)
     }
 }
@@ -506,11 +508,13 @@ impl Drop for TurnHandle {
     fn drop(&mut self) {
         self.turn.finish();
         let mut turns = self.relay.write();
-        if turns
-            .get(&self.session_id)
-            .is_some_and(|turn| Arc::ptr_eq(turn, &self.turn))
-        {
-            turns.remove(&self.session_id);
+        if let Entry::Occupied(mut entry) = turns.entry(self.session_id.clone()) {
+            entry
+                .get_mut()
+                .retain(|turn| !Arc::ptr_eq(turn, &self.turn));
+            if entry.get().is_empty() {
+                entry.remove();
+            }
         }
     }
 }
@@ -694,20 +698,19 @@ mod tests {
     }
 
     #[test]
-    fn allows_one_turn_per_session() {
+    fn allows_multiple_turns_per_session() {
         let relay = StreamRelay::default();
-        let handle = relay.begin("a").unwrap();
+        let handle1 = relay.begin("a").unwrap();
         assert!(relay.is_running("a"));
-        assert!(matches!(
-            relay.begin("a"),
-            Err(AppError::TurnAlreadyRunning)
-        ));
+        let handle2 = relay.begin("a").unwrap();
+        assert!(relay.is_running("a"));
         let other = relay.begin("b").unwrap();
 
-        drop(handle);
+        drop(handle1);
+        assert!(relay.is_running("a"));
+        drop(handle2);
         assert!(!relay.is_running("a"));
         assert!(relay.is_running("b"));
-        assert!(relay.begin("a").is_ok());
         drop(other);
     }
 

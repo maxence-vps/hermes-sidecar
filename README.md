@@ -81,7 +81,7 @@ When a client initiates an agent turn directly through Hermes `POST /api/session
 - Accepts `{"message": ...}` (same schema as Hermes).
 - Runs in a background task that reads Hermes's SSE stream to completion, even if the client disconnects mid-stream.
 - Buffers events of the ongoing turn in memory and streams them back to the caller as Server-Sent Events (`run.started`, `assistant.delta`, `tool.*`, `assistant.completed`, `run.*`, `done`).
-- Returns `409 turn_already_running` if a turn is already running for the session, `404 session_not_found` if the session does not exist, `400 invalid_request` if the body is invalid, and `502 hermes_unavailable` if Hermes cannot be reached.
+- Returns `404 session_not_found` if the session does not exist, `400 invalid_request` if the body is invalid, and `502 hermes_unavailable` if Hermes cannot be reached. Multiple turns in the same session are queued and relayed in order.
 
 `GET /sessions/{id}/stream/status` checks whether an agent turn is currently running for this conversation:
 - Returns `{"is_active": bool, "message_id": string | null, "started_at": string | null}`.

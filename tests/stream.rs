@@ -192,7 +192,7 @@ async fn stream_returns_404_when_session_not_found() {
 }
 
 #[tokio::test]
-async fn stream_rejects_duplicate_active_turn() {
+async fn stream_allows_multiple_turns_in_one_session() {
     let proceed = Arc::new(Notify::new());
     let proceed_clone = proceed.clone();
 
@@ -236,7 +236,7 @@ async fn stream_rejects_duplicate_active_turn() {
     let res1 = app.clone().oneshot(req1).await.unwrap();
     assert_eq!(res1.status(), StatusCode::OK);
 
-    // Second request while turn 1 is still active
+    // Second request while turn 1 is still active succeeds and relays
     let req2 = Request::post("/sessions/test_turn/chat/stream")
         .header(header::AUTHORIZATION, format!("Bearer {KEY}"))
         .header(header::CONTENT_TYPE, "application/json")
@@ -244,14 +244,12 @@ async fn stream_rejects_duplicate_active_turn() {
         .unwrap();
 
     let res2 = app.clone().oneshot(req2).await.unwrap();
-    assert_eq!(res2.status(), StatusCode::CONFLICT);
-    let body = res2.into_body().collect().await.unwrap().to_bytes();
-    let json: Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(json["error"]["code"], "turn_already_running");
+    assert_eq!(res2.status(), StatusCode::OK);
 
-    // Release turn 1
-    proceed.notify_one();
+    // Release both turns
+    proceed.notify_waiters();
     let _ = res1.into_body().collect().await;
+    let _ = res2.into_body().collect().await;
 }
 
 #[tokio::test]
