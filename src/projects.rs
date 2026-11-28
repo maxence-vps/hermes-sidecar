@@ -395,7 +395,7 @@ async fn detach_conversation(
 
 /// Not empty, at most 255 characters, printable ASCII without spaces, no `/` (which a client
 /// could still send percent-encoded).
-fn validate_conversation_id(id: &str) -> Result<(), AppError> {
+pub(crate) fn validate_conversation_id(id: &str) -> Result<(), AppError> {
     let valid = !id.is_empty()
         && id.len() <= MAX_CONVERSATION_ID_LEN
         && id.bytes().all(|b| b.is_ascii_graphic() && b != b'/');

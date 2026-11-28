@@ -23,6 +23,7 @@ use crate::{
     error::{AppError, ErrorBody},
     media, projects,
     state::AppState,
+    stream,
 };
 
 /// Name of the bearer security scheme in the OpenAPI spec.
@@ -39,6 +40,7 @@ pub const BEARER_SCHEME: &str = "bearer";
     tags(
         (name = "sidecar", description = "Sidecar endpoints"),
         (name = "projects", description = "Projects group Conversations (Hermes sessions) and git Repositories"),
+        (name = "streams", description = "Agent turns relayed from Hermes, which go on when the client disconnects"),
     )
 )]
 struct ApiDoc;
@@ -64,6 +66,7 @@ pub fn router(state: AppState) -> Router {
         .routes(routes!(status))
         .routes(routes!(get_media))
         .merge(projects::router())
+        .merge(stream::router())
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             require_api_key,

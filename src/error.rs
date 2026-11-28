@@ -41,6 +41,14 @@ pub enum AppError {
     InvalidRepositoryUrl(#[from] InvalidRepositoryUrl),
     #[error("the conversation id must be 1 to 255 printable ASCII characters, without spaces or /")]
     InvalidConversationId,
+    #[error("invalid request: {0}")]
+    InvalidRequest(String),
+    #[error("Hermes has no session with this id")]
+    SessionNotFound,
+    #[error("a turn is already running in this conversation")]
+    TurnAlreadyRunning,
+    #[error("the stream relay stopped before Hermes answered")]
+    RelayFailed,
 }
 
 /// Body of every error response.
@@ -87,6 +95,10 @@ impl IntoResponse for AppError {
             AppError::InvalidConversationId => {
                 (StatusCode::UNPROCESSABLE_ENTITY, "invalid_conversation_id")
             }
+            AppError::InvalidRequest(_) => (StatusCode::BAD_REQUEST, "invalid_request"),
+            AppError::SessionNotFound => (StatusCode::NOT_FOUND, "session_not_found"),
+            AppError::TurnAlreadyRunning => (StatusCode::CONFLICT, "turn_already_running"),
+            AppError::RelayFailed => (StatusCode::INTERNAL_SERVER_ERROR, "relay_failed"),
         };
         if status.is_server_error() {
             tracing::warn!(error = %self, "request failed");

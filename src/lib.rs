@@ -11,6 +11,7 @@ pub mod projects;
 pub mod repository_url;
 pub mod routes;
 pub mod state;
+pub mod stream;
 
 pub use config::Config;
 pub use routes::router;
