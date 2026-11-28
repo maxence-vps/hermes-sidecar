@@ -23,6 +23,7 @@ Every route except `/health` requires `Authorization: Bearer <API_SERVER_KEY>`, 
 | `DATABASE_PATH` | yes | | Absolute path of the sidecar's SQLite file, created on first start, e.g. `/data/sidecar.db`. Put it on a volume. See [Database](#database). |
 | `BIND_ADDR` | no | `0.0.0.0:8080` | Listen address. |
 | `HERMES_MEDIA_DIR` | no | | Hermes `native-inputs` folder, mounted read-only, that `GET /media/{sha256}` reads. Must be absolute. Unset, the route answers `503`. See [Images](#images). |
+| `HERMES_FILES_DIR` | no | | Root folder that `GET /files/{*path}` serves, mounted read-only. Must be absolute. Unset, the route answers `503`. See [Files](#files). |
 | `API_DOCS_ENABLED` | no | `false` | Serves the OpenAPI spec and the Scalar docs (`true`/`false`, `1`/`0`, `yes`/`no`, `on`/`off`). Any other value stops startup. |
 | `RUST_LOG` | no | `info` | Log filter. |
 
@@ -33,6 +34,7 @@ Every route except `/health` requires `Authorization: Bearer <API_SERVER_KEY>`, 
 | `GET` | `/health` | no | Liveness probe. Does not call Hermes. |
 | `GET` | `/status` | yes | Checks the key and that Hermes is reachable. `502` if Hermes is down. |
 | `GET` | `/media/{sha256}` | yes | Image a client attached to a message. See [Images](#images). |
+| `GET` | `/files/{*path}` | yes | Downloads a file from the configured files directory. See [Files](#files). |
 | `GET` | `/sessions` | yes | Lists Hermes sessions, with `limit` and `offset`. See [Sessions](#sessions). |
 | `POST` | `/sessions` | yes | Creates a Hermes session from `{"model", "provider"}` (both optional). |
 | `GET` | `/sessions/{id}` | yes | One Hermes session. |
@@ -75,6 +77,21 @@ The sidecar reads the files from the Hermes data volume:
 - Mount only `cache/documents/native-inputs` (volume `subpath`, Docker 26+), read-only, so the sidecar does not see the rest of the Hermes data (`.env`, `auth.json`).
 - Run the sidecar as the Hermes user (`10000:10000` in the official image): the files are `0600`.
 - Set `HERMES_MEDIA_DIR` to the mount point.
+
+## Files
+
+`GET /files/{*path}` (or `GET /files?path=...`) allows clients to download files created by the agent or stored in the workspace directory.
+
+- Path resolution is strictly confined to `HERMES_FILES_DIR`. Any attempt to escape via path traversal (`..`, `.`, root prefixes) is rejected with `400 invalid_file_path`.
+- Symlinks pointing outside the configured directory are rejected and return `404 file_not_found`.
+- If the requested path begins with the configured root path (e.g. `/opt/data/projects/...`), the prefix is automatically stripped so that both relative paths and workspace-prefixed paths resolve identically.
+- Only regular files are served (directories return `404 file_not_found`). Files up to 100 MiB are supported.
+- Answers with the appropriate `Content-Type` for common formats (Markdown, text, JSON, YAML, PDF, images, source code, archives) or `application/octet-stream`, `Content-Disposition: attachment; filename="..."`, and `X-Content-Type-Options: nosniff`.
+- Unset `HERMES_FILES_DIR` turns the route off: it answers `503 files_not_configured`.
+
+To make files downloadable:
+- Mount the workspace/projects volume (for example `/opt/data/projects`) read-only into the sidecar container.
+- Set `HERMES_FILES_DIR` to the container mount point.
 
 ## Sessions
 
