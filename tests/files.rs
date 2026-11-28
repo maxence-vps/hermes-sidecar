@@ -62,8 +62,7 @@ async fn files_requires_authentication() {
     let body = response_json(response).await;
     assert_eq!(body["error"]["code"], "unauthorized");
 
-    let response =
-        get_file_request(app.clone(), "/files/test.md", Some("Bearer wrong-key")).await;
+    let response = get_file_request(app.clone(), "/files/test.md", Some("Bearer wrong-key")).await;
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 
     let response = get_file_request(app, "/files?path=test.md", None).await;
@@ -86,7 +85,10 @@ async fn files_serves_a_file_by_path() {
 
     assert_eq!(response.status(), StatusCode::OK);
     let headers = response.headers();
-    assert_eq!(headers[header::CONTENT_TYPE], "text/markdown; charset=utf-8");
+    assert_eq!(
+        headers[header::CONTENT_TYPE],
+        "text/markdown; charset=utf-8"
+    );
     assert_eq!(
         headers[header::CONTENT_DISPOSITION],
         "attachment; filename=\"dokploy-hermes-setup.md\""
@@ -178,7 +180,8 @@ async fn files_rejects_path_traversal() {
     let app = app(Some(root.path()));
 
     for bad_path in ["/files/../secret", "/files/a/../../secret"] {
-        let response = get_file_request(app.clone(), bad_path, Some(&format!("Bearer {KEY}"))).await;
+        let response =
+            get_file_request(app.clone(), bad_path, Some(&format!("Bearer {KEY}"))).await;
         assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{bad_path}");
         let body = response_json(response).await;
         assert_eq!(body["error"]["code"], "invalid_file_path");
@@ -217,8 +220,7 @@ async fn files_returns_404_for_directory() {
     std::fs::create_dir(root.path().join("some_dir")).unwrap();
 
     let app = app(Some(root.path()));
-    let response =
-        get_file_request(app, "/files/some_dir", Some(&format!("Bearer {KEY}"))).await;
+    let response = get_file_request(app, "/files/some_dir", Some(&format!("Bearer {KEY}"))).await;
 
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
     let body = response_json(response).await;
@@ -241,8 +243,7 @@ async fn files_returns_404_for_nonexistent_file() {
 #[tokio::test]
 async fn files_returns_503_when_not_configured() {
     let app = app(None);
-    let response =
-        get_file_request(app, "/files/test.md", Some(&format!("Bearer {KEY}"))).await;
+    let response = get_file_request(app, "/files/test.md", Some(&format!("Bearer {KEY}"))).await;
 
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     let body = response_json(response).await;
@@ -260,15 +261,9 @@ async fn openapi_spec_describes_the_files_routes() {
     let spec = response_json(response).await;
     let files_op = &spec["paths"]["/files/{*path}"]["get"];
     assert_eq!(files_op["tags"], serde_json::json!(["files"]));
-    assert_eq!(
-        files_op["security"],
-        serde_json::json!([{ "bearer": [] }])
-    );
+    assert_eq!(files_op["security"], serde_json::json!([{ "bearer": [] }]));
 
     let query_op = &spec["paths"]["/files"]["get"];
     assert_eq!(query_op["tags"], serde_json::json!(["files"]));
-    assert_eq!(
-        query_op["security"],
-        serde_json::json!([{ "bearer": [] }])
-    );
+    assert_eq!(query_op["security"], serde_json::json!([{ "bearer": [] }]));
 }

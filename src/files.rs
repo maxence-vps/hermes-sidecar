@@ -135,7 +135,9 @@ pub async fn resolve_file_path(root: &Path, raw_path: &str) -> Result<PathBuf, A
 
     let canonical_candidate = match tokio::fs::canonicalize(&candidate).await {
         Ok(path) => path,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Err(AppError::FileNotFound),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            return Err(AppError::FileNotFound);
+        }
         Err(err) => return Err(AppError::FileUnreadable(err.to_string())),
     };
 
@@ -145,7 +147,9 @@ pub async fn resolve_file_path(root: &Path, raw_path: &str) -> Result<PathBuf, A
 
     let meta = match tokio::fs::metadata(&canonical_candidate).await {
         Ok(m) => m,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Err(AppError::FileNotFound),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            return Err(AppError::FileNotFound);
+        }
         Err(err) => return Err(AppError::FileUnreadable(err.to_string())),
     };
 
@@ -165,7 +169,9 @@ pub async fn serve_file(root: &Path, raw_path: &str) -> Result<Response, AppErro
     let file_path = resolve_file_path(root, raw_path).await?;
     let bytes = match tokio::fs::read(&file_path).await {
         Ok(b) => b,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Err(AppError::FileNotFound),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            return Err(AppError::FileNotFound);
+        }
         Err(err) => return Err(AppError::FileUnreadable(err.to_string())),
     };
 
@@ -177,7 +183,13 @@ pub async fn serve_file(root: &Path, raw_path: &str) -> Result<Response, AppErro
 
     let safe_filename: String = filename
         .chars()
-        .map(|c| if c.is_alphanumeric() || c == '.' || c == '-' || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '.' || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
 
     let mut headers = HeaderMap::new();
@@ -268,11 +280,26 @@ mod tests {
 
     #[test]
     fn detects_content_types() {
-        assert_eq!(content_type(Path::new("test.md")), "text/markdown; charset=utf-8");
-        assert_eq!(content_type(Path::new("test.TXT")), "text/plain; charset=utf-8");
+        assert_eq!(
+            content_type(Path::new("test.md")),
+            "text/markdown; charset=utf-8"
+        );
+        assert_eq!(
+            content_type(Path::new("test.TXT")),
+            "text/plain; charset=utf-8"
+        );
         assert_eq!(content_type(Path::new("test.json")), "application/json");
-        assert_eq!(content_type(Path::new("test.yaml")), "text/yaml; charset=utf-8");
-        assert_eq!(content_type(Path::new("test.unknown")), "application/octet-stream");
-        assert_eq!(content_type(Path::new("no_ext")), "application/octet-stream");
+        assert_eq!(
+            content_type(Path::new("test.yaml")),
+            "text/yaml; charset=utf-8"
+        );
+        assert_eq!(
+            content_type(Path::new("test.unknown")),
+            "application/octet-stream"
+        );
+        assert_eq!(
+            content_type(Path::new("no_ext")),
+            "application/octet-stream"
+        );
     }
 }
