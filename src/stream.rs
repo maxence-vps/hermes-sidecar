@@ -194,7 +194,7 @@ async fn attach_stream(
 
 /// A conversation id that is also safe as a URL path segment: `.` and `..` would be resolved as
 /// dot segments, even percent-encoded.
-fn validate_session_id(id: &str) -> Result<(), AppError> {
+pub(crate) fn validate_session_id(id: &str) -> Result<(), AppError> {
     validate_conversation_id(id)?;
     if matches!(id, "." | "..") {
         return Err(AppError::InvalidConversationId);

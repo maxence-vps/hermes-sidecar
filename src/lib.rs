@@ -10,6 +10,7 @@ pub mod media;
 pub mod projects;
 pub mod repository_url;
 pub mod routes;
+pub mod sessions;
 pub mod state;
 pub mod stream;
 

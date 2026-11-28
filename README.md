@@ -33,6 +33,12 @@ Every route except `/health` requires `Authorization: Bearer <API_SERVER_KEY>`, 
 | `GET` | `/health` | no | Liveness probe. Does not call Hermes. |
 | `GET` | `/status` | yes | Checks the key and that Hermes is reachable. `502` if Hermes is down. |
 | `GET` | `/media/{sha256}` | yes | Image a client attached to a message. See [Images](#images). |
+| `GET` | `/sessions` | yes | Lists Hermes sessions, with `limit` and `offset`. See [Sessions](#sessions). |
+| `POST` | `/sessions` | yes | Creates a Hermes session from `{"model", "provider"}` (both optional). |
+| `GET` | `/sessions/{id}` | yes | One Hermes session. |
+| `PATCH` | `/sessions/{id}` | yes | Renames a Hermes session from `{"title"}`. |
+| `DELETE` | `/sessions/{id}` | yes | Deletes a Hermes session and takes it out of its project. |
+| `POST` | `/sessions/{id}/fork` | yes | Forks a Hermes session. The fork takes the original's place in its project. |
 | `POST` | `/sessions/{id}/chat/stream` | yes | Relays an agent turn from Hermes. Decoupled from the client. See [Chat streams](#chat-streams). |
 | `GET` | `/sessions/{id}/stream/status` | yes | Active stream status for a conversation. See [Chat streams](#chat-streams). |
 | `GET` | `/sessions/{id}/stream` | yes | Attaches to an ongoing stream, replaying buffered events. See [Chat streams](#chat-streams). |
@@ -69,6 +75,24 @@ The sidecar reads the files from the Hermes data volume:
 - Mount only `cache/documents/native-inputs` (volume `subpath`, Docker 26+), read-only, so the sidecar does not see the rest of the Hermes data (`.env`, `auth.json`).
 - Run the sidecar as the Hermes user (`10000:10000` in the official image): the files are `0600`.
 - Set `HERMES_MEDIA_DIR` to the mount point.
+
+## Sessions
+
+The session lifecycle goes through the sidecar, so clients never need to reach Hermes (`:8642`) directly. Each route calls the matching Hermes route (`/api/sessions…`) and answers with Hermes's status and JSON body as is; the sidecar only adds the side effects on [projects](#conversations).
+
+- `GET /sessions` forwards `limit` and `offset` (non-negative integers, both optional) and no other parameter. A value that is not a non-negative integer is `400 invalid_request`.
+- `POST /sessions` forwards `model` and `provider`; a field left out is not sent, so Hermes uses its default. Send `{}` for both defaults.
+- `PATCH /sessions/{id}` forwards `{"title": "..."}`. A missing or non-string `title` is `422 invalid_body`.
+- `DELETE /sessions/{id}` takes the session out of its project once Hermes has deleted it, and also when Hermes answers `404` (the session was already gone), so it does not stay referenced. Any other Hermes failure keeps the link.
+- `POST /sessions/{id}/fork` forwards its body, if any, as is (it must be a JSON object). The new id is read from `session.id`, or else `id`, in Hermes's answer. If the original was in a project, the fork goes into that project and the original leaves it. Without a usable new id, projects are left unchanged.
+
+Errors:
+
+- `422 invalid_conversation_id` for an id that is not 1 to 255 printable ASCII characters, without spaces or `/`, or is `.` or `..`.
+- `404 session_not_found` when Hermes has no session with this id.
+- `400 invalid_request` when Hermes rejects the request (`400` or `422`), or the fork body is not a JSON object; `400`/`415`/`422 invalid_body` for a create or rename body that is not the expected JSON.
+- `502 hermes_unavailable` when Hermes is unreachable, fails, or answers with something that is not JSON.
+- `500 database_error` when Hermes succeeded but the project could not be updated: the Hermes change is not rolled back.
 
 ## Chat streams
 
@@ -138,7 +162,7 @@ A Conversation is a Hermes session, referenced by its id only: the sidecar store
 - `PUT /projects/{id}/conversations/{conversation_id}` puts it in the project. If it was in another project, it moves. Calling it again changes nothing.
 - `DELETE` takes it out of the project, and answers `204` also when it was not there (a conversation in another project stays there).
 - The id is 1 to 255 printable ASCII characters, without spaces or `/` (even percent-encoded). Anything else is `422 invalid_conversation_id`.
-- The sidecar does not check that the conversation exists in Hermes (see `docs/adr/0001-sqlite-for-sidecar-data.md`): one deleted in Hermes stays referenced until the client takes it out.
+- The sidecar does not check that the conversation exists in Hermes (see `docs/adr/0001-sqlite-for-sidecar-data.md`): one deleted in Hermes stays referenced until the client takes it out. Deleting it through `DELETE /sessions/{id}` takes it out automatically (see [Sessions](#sessions)).
 
 ## OpenAPI docs
 

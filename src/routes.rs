@@ -21,7 +21,7 @@ use crate::{
     auth::require_api_key,
     docs,
     error::{AppError, ErrorBody},
-    media, projects,
+    media, projects, sessions,
     state::AppState,
     stream,
 };
@@ -40,6 +40,7 @@ pub const BEARER_SCHEME: &str = "bearer";
     tags(
         (name = "sidecar", description = "Sidecar endpoints"),
         (name = "projects", description = "Projects group Conversations (Hermes sessions) and git Repositories"),
+        (name = "sessions", description = "Hermes sessions (Conversations), proxied with their side effects on projects"),
         (name = "streams", description = "Agent turns relayed from Hermes, which go on when the client disconnects"),
     )
 )]
@@ -66,6 +67,7 @@ pub fn router(state: AppState) -> Router {
         .routes(routes!(status))
         .routes(routes!(get_media))
         .merge(projects::router())
+        .merge(sessions::router())
         .merge(stream::router())
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
